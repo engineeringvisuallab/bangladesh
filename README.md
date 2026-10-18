@@ -1,49 +1,58 @@
-# Bangladesh Open World — Stage 1
+# Bangladesh Open World — Stage 2: Static Tile Pipeline
 
-This project is deliberately **not a Google Maps/Cesium map viewer**. It uses Three.js to create a perspective 3D scene and turns real-world data into scene geometry:
+This remains a **Three.js game-like 3D world**, not a Google Maps viewer. It creates terrain, road ribbons, water ribbons/areas and extruded building meshes in a perspective scene. WASD and mouse-look controls are retained.
 
-- Elevation samples are used to build a real terrain mesh from Copernicus DEM GLO-90, accessed through Open-Meteo's Elevation API.
-- OpenStreetMap road ways become 3D road ribbons.
-- OpenStreetMap waterways become 3D water ribbons and closed water polygons become water surfaces.
-- OpenStreetMap building footprints become extruded 3D buildings. Reported `height`/`building:levels` values are used where available; unknown heights are estimates.
-- A 3 km × 3 km scene tile is loaded around the player. The world recenters and streams a new tile as you travel, so the whole-country dataset is not loaded into RAM at once.
-- WASD movement, mouse look, shift to move faster, Space/C to rise/descend, F to toggle ground-follow/drone mode, Tab to show/hide the controls, and a few fast-travel locations are included.
+## What changed in Stage 2
 
-## Publish on GitHub Pages
+- The application now computes a deterministic ~3 km tile grid. The same latitude/longitude always resolves to the same tile key (for example `r122_c81`).
+- At load time it tries `data/tiles/<tile-key>.json` first. If a static tile exists, terrain and OSM geometry are loaded from that file without calling live data APIs.
+- If no static tile is present, it keeps the Stage 1 live API fallback for experimentation.
+- Tile rebasing is aligned to the fixed grid, so movement streams to a neighboring tile instead of repeatedly reloading the same arbitrary center.
+- Terrain uses 32 mesh segments per side by default, roughly 94 m sample spacing over 3 km, compatible with broad GLO-90 terrain visualization.
+- `tools/build_tile.py` prebuilds one local static tile from Open-Meteo Elevation API and Overpass OSM data.
 
-1. Create a GitHub repository named `bangladesh-openworld` (or another name).
-2. Upload the **contents** of this folder to the repository root. `index.html` must be at the root.
-3. Go to **Settings → Pages**.
-4. Choose **Deploy from a branch**, select `main`, choose `/(root)`, and Save.
-5. Wait for GitHub Pages deployment, then open the URL shown by GitHub.
+## Build a static tile on your PC
 
-There is no npm build step. The page imports Three.js and its Sky addon from jsDelivr, so the browser must have internet access.
+Python 3.10+ is recommended. The builder uses only Python standard-library modules; no pip install is required.
 
-## First run
+On Windows, you can double-click `BUILD-DHAKA-TILE.bat`. Or from the extracted project folder run:
 
-Click **ENTER THE WORLD**. The first tile fetches elevation data and OSM geometry. After it loads, click the 3D scene to capture the mouse.
+```bash
+python tools/build_tile.py --lat 23.8103 --lon 90.4125
+```
 
-- `W A S D` — move
-- Mouse — look around
-- `Shift` — fast movement
-- `Space` / `C` — rise / descend in drone mode
-- `F` — toggle ground-follow / drone mode
-- `Tab` — toggle side panel
-- `Esc` — release mouse
-- Use the Fast travel selector to jump to another Bangladesh location
+That builds the fixed tile containing central Dhaka. To create a tile around another place, supply its coordinates, for example:
 
-## Important limitations (honest status)
+```bash
+python tools/build_tile.py --lat 24.0023 --lon 90.4264
+```
 
-This is the first working architecture, not a completed photorealistic 3D Bangladesh. The loaded tile is local to the current player position. Features appear only if they are mapped in OpenStreetMap. The open elevation endpoint provides a 90 m DEM; the mesh is sampled more coarsely to keep initial loading manageable. This does not resolve road embankments, culverts, individual small landforms, detailed roof material, vegetation, or every building throughout the country. The terrain tint/texture is illustrative and is **not** a verified land-cover layer. Unknown building heights are approximate.
+The script requests one tile (terrain elevation batches plus OSM geometry), then writes `data/tiles/r<row>_c<col>.json`. Validate the result with `python tools/validate_tile.py data/tiles/r<row>_c<col>.json`. Commit that file to GitHub with the app and reload that area; the browser should report `prebuilt static tile` instead of `live API`.
 
-Open-Meteo's public API terms describe the free service as non-commercial. This demo is for prototyping/evaluation; before any public commercial launch or high-volume use, replace this runtime elevation sampling with a processed and hosted tile pipeline based on licensed elevation data (for example, Copernicus DEM) and use a suitable commercial/hosted data plan. Public Overpass servers are shared infrastructure; this code requests one small tile at a time and is not intended as a high-volume production backend.
+Optional switches:
 
-## Licences / attribution
+- `--segments 32` (default; allowed 8–128; larger means more terrain samples and more API requests)
+- `--skip-osm` (terrain-only build; road/building/water data will be empty)
+- `--skip-elevation` (creates a zero-height placeholder, **not real terrain**; only for schema tests)
+- `--output-dir PATH` (custom output directory)
 
-- Map geometry: © OpenStreetMap contributors, ODbL. See <https://www.openstreetmap.org/copyright>.
-- Elevation: Copernicus DEM GLO-90 accessed via Open-Meteo. Open-Meteo asks users to credit Copernicus DEM and Open-Meteo; see <https://open-meteo.com/en/docs/elevation-api>.
-- Three.js: MIT, <https://github.com/mrdoob/three.js>.
+## Publish with GitHub Pages
 
-## Next stage
+1. Upload the contents of this folder into your repository root, keeping `index.html` at the root.
+2. Commit the `src/`, `tools/`, `data/`, `.nojekyll`, README, and stage plan files.
+3. In repository Settings → Pages, use Deploy from a branch → `main` → `/(root)`.
+4. Static tiles are fetched relative to `src/main.js`, so repository subpaths such as `https://USER.github.io/REPOSITORY/` are supported.
 
-Stage 2 should replace runtime point-by-point elevation requests with a preprocessed Bangladesh DEM tile pyramid and a proper terrain LOD loader. It should also generate an offline national vector-to-3D-Tiles pipeline from a Geofabrik OSM extract, then stream building/road/water tiles from static hosting or object storage. The present browser-side OSM calls are proof-of-concept only.
+No npm build is needed. Three.js is imported from jsDelivr, so the viewer needs internet access even when the specific world data tile is prebuilt.
+
+## Current limitations
+
+This is not yet the whole-country dataset. A generated tile covers about 3 km × 3 km. OSM features may be omitted by the builder's per-class output caps or because the source data itself is incomplete. DEM is a broad 90 m product; it cannot represent every road embankment, culvert, small terrain form, or building footprint. Unknown building heights remain estimated. Browser/live services have not been verified from this build environment, so test a generated tile on your PC before treating it as accepted data.
+
+For whole Bangladesh, next move to an **offline national pipeline** using a downloaded DEM and Geofabrik OSM PBF extract. Do not hammer public APIs or put a massive national data pack in a GitHub repository. See `STAGE-3-PLAN.md`.
+
+## Attribution and licenses
+
+- Map geometry: © OpenStreetMap contributors, ODbL — <https://www.openstreetmap.org/copyright>
+- Elevation: Copernicus DEM GLO-90 via Open-Meteo Elevation API — <https://open-meteo.com/en/docs/elevation-api>. Review current usage terms before commercial/high-volume use.
+- Three.js: MIT — <https://github.com/mrdoob/three.js>

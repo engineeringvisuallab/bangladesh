@@ -2,8 +2,10 @@ import * as THREE from 'three';
 import { Sky } from 'three/addons/objects/Sky.js';
 
 const $ = (id) => document.getElementById(id);
-const TILE_SIZE = 3000; // metres across; streamed world patch, not the whole country in RAM
-const GRID_SEGMENTS = 20;
+const TILE_SIZE = 3000; // metres across; one streamed world tile
+const GRID_SEGMENTS = 32; // ~94 m spacing for the broad-resolution GLO-90 DEM
+const TILE_GRID_LAT_ORIGIN = 20.5;
+const TILE_GRID_LON_ORIGIN = 88.0;
 const DEFAULT_LOCATION = { name: 'Dhaka', lat: 23.8103, lon: 90.4125 };
 const PLACES = {
   dhaka: { name: 'Dhaka', lat: 23.8103, lon: 90.4125 },
@@ -115,6 +117,17 @@ function centerWorldCoords(lat, lon, around = origin) {
   const z = (around.lat - lat) * 111320;
   return { x, z };
 }
+// Fixed geographic grid: the same coordinates always resolve to the same static tile file.
+// Each row's longitude spacing is adjusted for its latitude so tiles remain approximately 3 km wide.
+function tileAddressFor(lat, lon) {
+  const latStep = TILE_SIZE / 111320;
+  const row = Math.floor((lat - TILE_GRID_LAT_ORIGIN) / latStep);
+  const centerLat = TILE_GRID_LAT_ORIGIN + (row + 0.5) * latStep;
+  const lonStep = TILE_SIZE / (111320 * Math.cos(THREE.MathUtils.degToRad(centerLat)));
+  const col = Math.floor((lon - TILE_GRID_LON_ORIGIN) / lonStep);
+  const centerLon = TILE_GRID_LON_ORIGIN + (col + 0.5) * lonStep;
+  return { row, col, key: `r${row}_c${col}`, origin: { lat: centerLat, lon: centerLon } };
+}
 function currentLatLon() {
   return {
     lat: origin.lat - camera.position.z / 111320,
@@ -168,6 +181,24 @@ function fallbackHeight(lat, lon) {
   return Math.max(0, 6 + wave);
 }
 
+async function fetchPrebuiltTile(address) {
+  // Static tiles are served from the repository first. A missing file means this tile has not
+  // been built yet, in which case the prototype may fall back to the live public endpoints.
+  const url = new URL(`../data/tiles/${address.key}.json`, import.meta.url);
+  const response = await fetch(url, { cache: 'force-cache' });
+  if (response.status === 404) return null;
+  if (!response.ok) throw new Error(`Prebuilt tile request returned HTTP ${response.status}`);
+  const payload = await response.json();
+  const terrain = payload?.terrain;
+  const elements = payload?.osm?.elements;
+  if (payload?.tile?.key !== address.key || !Number.isFinite(terrain?.segments) ||
+      !Array.isArray(terrain?.heights) || terrain.heights.length !== (terrain.segments + 1) ** 2 ||
+      !Array.isArray(elements)) {
+    throw new Error(`Prebuilt tile ${address.key} has an invalid schema. Rebuild it with tools/build_tile.py.`);
+  }
+  return payload;
+}
+
 async function fetchTerrain(originPoint) {
   const segments = GRID_SEGMENTS;
   const points = [];
@@ -182,7 +213,7 @@ async function fetchTerrain(originPoint) {
       });
     }
   }
-  const cacheKey = `bdow-dem-v1-${originPoint.lat.toFixed(5)}-${originPoint.lon.toFixed(5)}`;
+  const cacheKey = `bdow-dem-v2-${tileAddressFor(originPoint.lat, originPoint.lon).key}`;
   try {
     const cached = sessionStorage.getItem(cacheKey);
     if (cached) {
@@ -542,35 +573,62 @@ function disposeGroup(group) {
 async function loadWorldTile(lat, lon, reason = 'travel', keepCamera = false) {
   if (tileLoading) return;
   tileLoading = true;
-  setLoadingVeil(true, reason === 'initial' ? 'Building the first world tile' : 'Streaming next world tile', 'Fetching real elevation samples and mapped road/building geometry…');
+  setLoadingVeil(true, reason === 'initial' ? 'Building the first world tile' : 'Streaming next world tile', 'Checking local prebuilt data before requesting live map services…');
   setWorldState('LOADING WORLD DATA');
   $('enterButton').disabled = true;
   const savedYaw = yaw, savedPitch = pitch;
   let savedAltitudeAboveGround = 180;
   if (activeTile) savedAltitudeAboveGround = camera.position.y - heightSampler(activeTile, camera.position.x, camera.position.z);
-  const tileOrigin = { lat: lat, lon: lon };
+  const address = tileAddressFor(lat, lon);
+  const tileOrigin = address.origin;
+  const targetLocal = centerWorldCoords(lat, lon, tileOrigin);
   let elevationData;
   let osmData = { elements: [] };
   let osmError = null;
+  let dataMode = 'live API';
+
   try {
-    const results = await Promise.allSettled([fetchTerrain(tileOrigin), fetchOSM(tileOrigin)]);
-    if (results[0].status === 'fulfilled') {
-      elevationData = results[0].value;
-      terrainReal = elevationData.source !== 'fallback';
-    } else {
-      terrainReal = false;
-      elevationData = makeFallbackTerrain(tileOrigin);
-      toast('DEM service unavailable; using clearly marked temporary terrain fallback.');
+    let prebuilt = null;
+    try {
+      prebuilt = await fetchPrebuiltTile(address);
+    } catch (error) {
+      console.warn('Prebuilt tile could not be used; trying the live-data fallback.', error);
+      toast(`Local tile ${address.key} could not be read; trying live data.`);
     }
-    if (results[1].status === 'fulfilled') { osmData = results[1].value; osmReal = true; }
-    else { osmError = results[1].reason; osmReal = false; }
+
+    if (prebuilt) {
+      elevationData = {
+        segments: prebuilt.terrain.segments,
+        points: [],
+        heights: prebuilt.terrain.heights,
+        source: prebuilt.terrain.source || 'prebuilt Copernicus DEM tile',
+      };
+      osmData = prebuilt.osm;
+      terrainReal = !/(fallback|not included|placeholder|not real)/i.test(String(elevationData.source));
+      osmReal = !/not included/i.test(String(prebuilt.osm.source || '')); 
+      dataMode = 'prebuilt static tile';
+      $('veilDetail').textContent = `Using local tile ${address.key}…`;
+    } else {
+      const results = await Promise.allSettled([fetchTerrain(tileOrigin), fetchOSM(tileOrigin)]);
+      if (results[0].status === 'fulfilled') {
+        elevationData = results[0].value;
+        terrainReal = elevationData.source !== 'fallback';
+      } else {
+        terrainReal = false;
+        elevationData = makeFallbackTerrain(tileOrigin);
+        toast('DEM service unavailable; using clearly marked temporary terrain fallback.');
+      }
+      if (results[1].status === 'fulfilled') { osmData = results[1].value; osmReal = true; }
+      else { osmError = results[1].reason; osmReal = false; }
+    }
   } catch (error) {
     $('loadingMessage').textContent = `World data error: ${error.message}`;
     throw error;
   }
-  const tile = { origin: tileOrigin, ...elevationData };
+
+  const tile = { key: address.key, origin: tileOrigin, ...elevationData };
   const newGroup = new THREE.Group();
-  newGroup.name = `WORLD_TILE_${lat.toFixed(4)}_${lon.toFixed(4)}`;
+  newGroup.name = `WORLD_TILE_${address.key}`;
   newGroup.add(createTerrain(tile));
   const osmBuilt = createOSMGeometry(tile, osmData);
   newGroup.add(osmBuilt.group);
@@ -581,29 +639,32 @@ async function loadWorldTile(lat, lon, reason = 'travel', keepCamera = false) {
   origin = tileOrigin;
 
   if (!keepCamera) {
-    const centerHeight = heightSampler(tile, 0, 0);
     if (reason === 'rebase') {
-      camera.position.set(0, centerHeight + savedAltitudeAboveGround, 0);
+      const groundAtPlayer = heightSampler(tile, targetLocal.x, targetLocal.z);
+      camera.position.set(targetLocal.x, groundAtPlayer + savedAltitudeAboveGround, targetLocal.z);
       yaw = savedYaw; pitch = savedPitch;
     } else {
-      camera.position.set(0, centerHeight + (reason === 'initial' ? 185 : 230), 720);
+      const startZ = targetLocal.z + (reason === 'initial' ? 720 : 600);
+      const startX = targetLocal.x;
+      const startGround = heightSampler(tile, startX, startZ);
+      camera.position.set(startX, startGround + (reason === 'initial' ? 185 : 230), startZ);
       yaw = 0;
       pitch = reason === 'initial' ? -0.18 : -0.22;
     }
     camera.rotation.set(pitch, yaw, 0);
   }
-  setStatus('terrainState', terrainReal ? `Copernicus GLO-90 · ${elevationData.source}` : 'Fallback terrain · DEM request failed');
-  setStatus('featureState', osmReal ? `${osmBuilt.roads} road ways · ${osmBuilt.waterways} waterways · ${osmBuilt.waterAreas} water areas` : 'OSM request failed · try reloading tile');
-  setStatus('buildingState', osmReal ? `${osmBuilt.buildings} 3D building footprints` : 'No building geometry loaded');
-  setStatus('tileState', `${lat.toFixed(4)}°, ${lon.toFixed(4)}° · 3 × 3 km`);
+  setStatus('terrainState', terrainReal ? `${elevationData.source}` : `UNVERIFIED: ${elevationData.source || 'DEM unavailable'}`);
+  setStatus('featureState', osmReal ? `${osmBuilt.roads} road ways · ${osmBuilt.waterways} waterways · ${osmBuilt.waterAreas} water areas · ${dataMode}` : (osmError ? 'OSM request failed · try reloading tile' : 'OSM geometry not included in this tile'));
+  setStatus('buildingState', osmReal ? `${osmBuilt.buildings} 3D building footprints` : 'No building geometry included');
+  setStatus('tileState', `${address.key} · 3 × 3 km · ${dataMode}`);
   setWorldState('WORLD ONLINE');
   $('enterButton').disabled = false;
-  $('loadingMessage').textContent = osmError ? `Terrain loaded; mapped geometry unavailable: ${osmError.message}` : 'World tile loaded. Click the scene and use WASD to explore.';
+  $('loadingMessage').textContent = osmError ? `Terrain loaded; mapped geometry unavailable: ${osmError.message}` : `World tile ${address.key} loaded. Click the scene and use WASD to explore.`;
   setLoadingVeil(false);
   tileLoading = false;
   updateHUD();
   if (osmError) toast('Terrain loaded, but OSM geometry could not be fetched.');
-  else toast(`World tile ready · ${osmBuilt.roads} roads · ${osmBuilt.buildings} buildings`);
+  else toast(`${address.key} ready · ${osmBuilt.roads} roads · ${osmBuilt.buildings} buildings`);
 }
 
 function makeFallbackTerrain(tileOrigin) {
@@ -625,12 +686,13 @@ function makeFallbackTerrain(tileOrigin) {
 
 function shouldRebase() {
   if (!activeTile || tileLoading || !hasEntered) return;
-  const threshold = TILE_SIZE * 0.37;
-  if (Math.abs(camera.position.x) > threshold || Math.abs(camera.position.z) > threshold) {
+  const pos = currentLatLon();
+  const nextAddress = tileAddressFor(pos.lat, pos.lon);
+  // Rebase only when crossing into a different fixed grid cell; don't reload the same tile.
+  if (nextAddress.key !== activeTile.key) {
     const now = performance.now();
-    if (now - lastRebaseAt < 1800) return;
+    if (now - lastRebaseAt < 1200) return;
     lastRebaseAt = now;
-    const pos = currentLatLon();
     loadWorldTile(pos.lat, pos.lon, 'rebase', false).catch(showFatalError);
   }
 }

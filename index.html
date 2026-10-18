@@ -70,7 +70,7 @@
       <div class="control-line"><kbd>Tab</kbd><span>Show / hide this panel</span></div>
       <div class="control-line"><kbd>Esc</kbd><span>Release mouse</span></div>
 
-      <div class="panel-note"><strong>Data honesty:</strong> the terrain uses a 90 m DEM sampled for this prototype. OSM roads, waterways and building footprints appear only where mapped. Unknown building heights are estimated. Ground surface tint is illustrative, not verified land cover.</div>
+      <div class="panel-note"><strong>Data honesty:</strong> local prebuilt tiles are used when available; otherwise this prototype requests live public data. The terrain is a broad-resolution GLO-90 DEM sampled at about 94 m for this tile. OSM roads, waterways and building footprints appear only where mapped and may be capped. Unknown building heights are estimated. Ground surface tint is illustrative, not verified land cover.</div>
       <div class="attribution">Elevation © Copernicus DEM via Open-Meteo · Map geometry © OpenStreetMap contributors</div>
     </aside>
 
@@ -79,7 +79,7 @@
       <div class="start-card glass">
         <div class="hero-eyebrow"><span class="dot"></span> REAL-WORLD DATA · 3D GEOMETRY</div>
         <div class="hero-title">BANGLADESH<br /><em>OPEN WORLD</em></div>
-        <p>A browser-based, game-like 3D world. Terrain is a real elevation surface. Roads, rivers and building footprints are rebuilt as 3D objects at their mapped coordinates — not displayed as a 2D map.</p>
+        <p>A browser-based, game-like 3D world. Terrain is a real elevation surface. Roads, rivers and building footprints are rebuilt as 3D objects at their mapped coordinates — not displayed as a 2D map. The engine checks for a prebuilt static tile before using live public data services.</p>
         <div class="feature-pills"><span>Terrain mesh</span><span>3D road ribbons</span><span>Extruded buildings</span><span>Free-flight camera</span></div>
         <button id="enterButton" class="enter-button">ENTER THE WORLD <span>↗</span></button>
         <div id="loadingMessage" class="loading-message">The first world tile loads from public elevation and OSM services when you enter.</div>

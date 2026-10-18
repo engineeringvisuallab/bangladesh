@@ -1,29 +1,24 @@
-# Stage 2 — national data pipeline plan
+# Bangladesh Open World — data pipeline notes
 
-The runtime prototype demonstrates rendering, but it must not be scaled to all Bangladesh by repeatedly calling public APIs. A nationwide product should use a deterministic, reproducible offline pipeline.
+## Implemented in Stage 2
 
-## Inputs
+The app now uses a deterministic ~3 km geographic tile grid. It first attempts to load `data/tiles/<tile-key>.json`, a compact package containing a terrain height grid and OpenStreetMap way geometries. The browser can construct terrain, road ribbons, waterways and extruded buildings from that static input. If no local tile exists, the prototype falls back to live public APIs.
 
-1. **Elevation** — Copernicus DEM GLO-90 for broad coverage; verify tile availability/terms for Bangladesh. Use a higher-resolution DEM where legitimately available.
-2. **Vector geometry** — Bangladesh OSM `.osm.pbf` extract from Geofabrik. Filter roads, waterways, building footprints, bridges, railway and land-use.
-3. **Optional land cover** — a licensed land-cover product (not random procedural color) for fields, forest, wetlands and urbanized areas.
-4. **Optional detailed city assets** — surveyed/photogrammetric/municipal building heights and models when rights and accurate source data exist.
+`tools/build_tile.py` is the pilot preprocessor. It requests one tile from Open-Meteo Elevation and OpenStreetMap Overpass, writes the exact schema consumed by `src/main.js`, and includes source-attribution metadata. `tools/validate_tile.py` checks the output structure.
 
-## Offline build steps
+## Required national pipeline (next stage)
 
-1. Clip/align the DEM and OSM vectors to a shared CRS and vertical datum; document sources and dates.
-2. Process DEM into multi-resolution terrain tiles (coarse far away, fine nearby).
-3. Convert vector roads to 3D ribbons with measured/tagged widths where available; flag inferred widths.
-4. Convert waterways/water polygons and bridge decks into meshes. Do not assume all road crossings are bridges; verify tags/data.
-5. Extrude building footprints using reported height/levels. Store uncertainty metadata for inferred heights.
-6. Export assets as glTF/GLB or 3D Tiles; preserve original latitude/longitude for each tile and use a local origin at runtime to avoid float precision issues.
-7. Publish tile files to static object storage/CDN and keep the GitHub Pages repository focused on the engine/client code.
-8. Add content versioning, tile index, cache strategy, data provenance, OSM attribution, and a visual quality/accuracy audit by district.
+Do not request thousands of tiles from shared public APIs. For a countrywide build, download the applicable licensed data first, then process it locally.
 
-## Acceptance tests for a future national build
+1. Elevation: download a suitable DEM dataset and document its licence, date, CRS, vertical datum and resolution.
+2. Vector geometry: download the Bangladesh OSM `.osm.pbf` extract from Geofabrik.
+3. Processing: use GDAL/PROJ plus an OSM PBF reader to clip and transform roads, waterways, railways, buildings, bridges and land-use layers.
+4. Terrain: create a multiresolution DEM tile pyramid; broad LOD at distance and higher-resolution LOD near the camera.
+5. Models: extrude building footprints from reported heights/levels; track inferred heights explicitly as estimates.
+6. Output: write static per-tile payloads or glTF/3D Tiles, preserving WGS84 source coordinates, tile origin, provenance and dataset versions.
+7. Hosting: keep the web client in GitHub Pages and host large nationwide data through object storage/CDN with CORS and cache headers.
+8. QA: compare road/river/bridge checkpoints to source data and sample at least one tile in each district.
 
-- Random checkpoints along national and regional roads agree with the source coordinates within a documented tolerance.
-- Elevation checkpoints and river/road crossings are inspected, with known DEM vertical limitations documented.
-- Reported building heights are separated from estimated heights in metadata/UI.
-- At least three LOD levels are available and browser memory remains bounded during cross-country traversal.
-- All tiles load on GitHub Pages with correct MIME types/CORS; large geometry is hosted outside the Git repository if size is excessive.
+## Constraints
+
+The current tile builder is a prototype and its Overpass output is capped by feature class. It is not a national data downloader, and a GLO-90 terrain grid cannot show every small embankment, road grade, culvert or roof detail. A full, accurate, every-building 3D Bangladesh requires much more source data and processing than the current prototype package contains.

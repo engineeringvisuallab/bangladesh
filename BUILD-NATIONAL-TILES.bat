@@ -1,7 +1,7 @@
 @echo off
 setlocal
 cd /d "%~dp0"
-echo BANGLADESH OPEN WORLD - FULL NATIONAL TILE BUILD
+echo BANGLADESH OPEN WORLD - STAGE 5 FULL NATIONAL GRID-V2 TILE BUILD
 echo WARNING: This may take hours and produce many thousands of tile files plus large temporary data.
 echo Do not put the raw PBF, DEM mosaic or full national tile directory in your GitHub source repository.
 echo.
@@ -30,14 +30,18 @@ if not exist data\source\bangladesh-dem.tif (
   pause
   exit /b 1
 )
-python tools\build_national_tiles.py --osm-pbf data\source\bangladesh-latest.osm.pbf --country-poly data\source\bangladesh.poly --dem data\source\bangladesh-dem.tif --output-dir data\national-tiles --work-dir data\national-build
+python tools\build_national_tiles.py --osm-pbf data\source\bangladesh-latest.osm.pbf --country-poly data\source\bangladesh.poly --dem data\source\bangladesh-dem.tif --output-dir data\national-tiles-v2 --work-dir data\national-build-v2
 if errorlevel 1 goto :failed
 echo.
-echo FULL national tile data build finished. Upload data\national-tiles to a public static host or object-storage bucket with CORS enabled.
+echo National data build finished. Running terrain seam audit...
+python tools\audit_tile_seams.py --tiles data\national-tiles-v2 --report data\national-tiles-v2\seam-report.json
+if errorlevel 1 goto :failed
+echo.
+echo National tile build and seam audit passed. Review the report, then upload tiles to a CORS-enabled static host/CDN.
 pause
 exit /b 0
 :failed
 echo.
-echo National build failed. Keep data\national-build to inspect resume options; ensure enough disk space.
+echo National build or seam audit failed. Keep data\national-build-v2 for diagnostics. Old schema-v1 feature databases must be rebuilt if grid v2 changed.
 pause
 exit /b 1

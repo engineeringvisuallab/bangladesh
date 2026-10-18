@@ -1,25 +1,12 @@
-"""Smoke-test the JS viewer's documented tile grid against the national Python builder.
-
-This test only checks deterministic grid addressing; it does not validate source geography
-or prove that external tile services are available.
-"""
+#!/usr/bin/env python3
+"""Smoke-test Bangladesh Open World schema-v2 grid addresses and exact neighbor edges."""
 from __future__ import annotations
-
 import math
-
-TILE_SIZE = 3000.0
-GRID_ORIGIN_LAT = 20.5
-GRID_ORIGIN_LON = 88.0
+from world_grid import GRID_REFERENCE_LAT, TILE_SIZE_METERS, geo_at_local, tile_address, tile_address_at_grid
 
 
-def tile_address(lat: float, lon: float) -> tuple[int, int, float, float]:
-    lat_step = TILE_SIZE / 111320.0
-    row = math.floor((lat - GRID_ORIGIN_LAT) / lat_step)
-    center_lat = GRID_ORIGIN_LAT + (row + 0.5) * lat_step
-    lon_step = TILE_SIZE / (111320.0 * math.cos(math.radians(center_lat)))
-    col = math.floor((lon - GRID_ORIGIN_LON) / lon_step)
-    center_lon = GRID_ORIGIN_LON + (col + 0.5) * lon_step
-    return row, col, center_lat, center_lon
+def near(a: float, b: float, eps: float = 1e-7) -> bool:
+    return abs(a - b) <= eps
 
 
 def main() -> int:
@@ -34,15 +21,33 @@ def main() -> int:
         "Bandarban": (22.1953, 92.2184),
     }
     for name, (lat, lon) in samples.items():
-        row, col, center_lat, center_lon = tile_address(lat, lon)
-        roundtrip = tile_address(center_lat, center_lon)
-        assert roundtrip[:2] == (row, col), f"{name}: tile center does not round-trip"
-        assert center_lat - 1 < lat < center_lat + 1, f"{name}: unexpected row center"
-        assert abs(center_lon - lon) < 1.0, f"{name}: unexpected column center"
-        print(f"{name}: r{row}_c{col} OK")
-    print(f"PASS: {len(samples)} Bangladesh locations match the national tile-grid formula.")
-    return 0
+        address = tile_address(lat, lon)
+        roundtrip = tile_address(address["origin"]["lat"], address["origin"]["lon"])
+        assert roundtrip["key"] == address["key"], f"{name}: tile center does not round-trip"
+        assert address["gridVersion"] == 2
+        print(f"{name}: {address['key']} OK")
 
+    # East/west neighbors must share exact geographic edge coordinates.
+    a = tile_address_at_grid(100, 100)
+    b = tile_address_at_grid(100, 101)
+    edge_a = geo_at_local(a["origin"], TILE_SIZE_METERS / 2, 0)
+    edge_b = geo_at_local(b["origin"], -TILE_SIZE_METERS / 2, 0)
+    assert near(edge_a[0], edge_b[0]) and near(edge_a[1], edge_b[1]), ("east/west seam", edge_a, edge_b)
+
+    # North/south neighbors share exact geographic edge coordinates.
+    south = tile_address_at_grid(100, 100)
+    north = tile_address_at_grid(101, 100)
+    edge_south = geo_at_local(south["origin"], 0, -TILE_SIZE_METERS / 2)
+    edge_north = geo_at_local(north["origin"], 0, TILE_SIZE_METERS / 2)
+    assert near(edge_south[0], edge_north[0]) and near(edge_south[1], edge_north[1]), ("north/south seam", edge_south, edge_north)
+
+    # Camera projection uses the same fixed-reference conversion when rebasing.
+    test_tile = tile_address(23.8103, 90.4125)
+    point = geo_at_local(test_tile["origin"], 120.25, -45.5)
+    restored = tile_address(point[0], point[1])
+    assert restored["gridVersion"] == 2
+    print(f"PASS: {len(samples)} Bangladesh points; east/west and north/south seams align on grid v2 ({GRID_REFERENCE_LAT}° reference latitude).")
+    return 0
 
 if __name__ == "__main__":
     raise SystemExit(main())

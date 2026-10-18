@@ -1,41 +1,40 @@
-# Stage 3 national offline tile pipeline
+# Stage 5 real-data pipeline
 
-## Inputs
+## Coordinate/grid v2
 
-1. Geofabrik `bangladesh-latest.osm.pbf`
-2. Matching Geofabrik `bangladesh.poly` boundary outline
-3. Copernicus DEM GLO-90 GeoTIFF tile mosaic covering Bangladesh
+`tools/world_grid.py` is the shared Python source of truth. The browser mirrors these constants in `src/main.js`:
 
-## Processing flow
+- Tile size: 3,000 projected metres
+- Grid origin: 20.5° N, 88.0° E
+- Fixed longitude reference: 23.5° N
+- Schema/grid version: 2
 
-1. Parse the `.poly` country outline and make candidate 3 km cells on the exact JS engine grid.
-2. Select cells whose center or sampled national boundary intersects the outline.
-3. Read the PBF with pyosmium and a disk-based sparse node-location index.
-4. Filter road/highway, railway, waterway, closed natural-water and closed building ways.
-5. Assign line features to every relevant 3 km tile traversed by sampled geometry; assign building footprints and water-area polygons to intersected boundary/interior cells.
-6. Persist tile-feature rows to a temporary SQLite database instead of keeping all OSM features in RAM.
-7. Sample the local DEM raster on each tile's 33 × 33 (default) height grid, then write the same JSON schema used by the browser.
-8. Produce `manifest.json` with counts and no-data samples.
+Using a fixed longitude step prevents north/south neighbors from shifting east-west as latitude changes. The projection is designed for visual/game-world consistency within Bangladesh; it is not an official cadastral projection and has small east-west scale distortion.
 
-## Commands
+## Build pilot data
 
-```powershell
-python -m pip install -r tools/requirements-stage3.txt
-python tools/build_national_tiles.py --osm-pbf data/source/bangladesh-latest.osm.pbf --country-poly data/source/bangladesh.poly --dem data/source/bangladesh-dem.tif --output-dir data/national-tiles --work-dir data/national-build --dry-run
-```
+1. `DOWNLOAD-NATIONAL-DATA.ps1` downloads the Geofabrik Bangladesh OSM `.osm.pbf` and `.poly` boundary.
+2. Download DEM GeoTIFF files for Bangladesh from the official Copernicus Data Space and put them in `data/source/dem_tiles/`.
+3. Run `MERGE-DEM-TILES.bat` to create `data/source/bangladesh-dem.tif`.
+4. Run `BUILD-PILOT-TILES.bat` to generate up to 25 tiles near Dhaka. Validate a sample with `python tools\validate_tile.py data\pilot-tiles-v2\r<row>_c<col>.json` after replacing the placeholder with an actual tile filename.
+5. Run `AUDIT-TILES.bat data\pilot-tiles-v2` or `python tools\audit_tile_seams.py --tiles data\pilot-tiles-v2 --report data\pilot-tiles-v2\seam-report.json`. The full national output is `data\national-tiles-v2`; audit it with `AUDIT-TILES.bat` or the matching Python command.
 
-Pilot:
+The national compiler uses one local PBF + one local DEM mosaic; it does not query Overpass once per tile. The national dataset can take considerable memory, disk space and processing time.
+
+## Seam audit
 
 ```powershell
-python tools/build_national_tiles.py --osm-pbf data/source/bangladesh-latest.osm.pbf --country-poly data/source/bangladesh.poly --dem data/source/bangladesh-dem.tif --output-dir data/national-tiles --work-dir data/national-build --max-tiles 25
+python tools\audit_tile_seams.py --tiles data\pilot-tiles-v2 --report data\pilot-tiles-v2\seam-report.json
 ```
 
-Nationwide: remove `--max-tiles 25` and run the same command. To reuse an intact feature database after a DEM sampling/output failure, add `--resume-features` **only if the PBF and country outline are unchanged**.
+Default thresholds: warn above 1 m, fail above 5 m. The audit skips edge samples whose no-data mask is true. It validates adjacent terrain height samples only; it does not prove that OSM roads/buildings have complete coverage or that the visuals are photorealistic.
 
-## Why tiles are not stored in GitHub
+## Static hosting
 
-The source extract and derived geometry are large, and thousands of JSON files add unnecessary source-control history. GitHub Pages is used for the frontend. Host the generated tile directory on object storage/CDN and set `tileBaseUrl` in `config.js`. If the configured host is remote, it must allow CORS GET requests from the Pages origin.
+Publish only web-app files to GitHub Pages. Host the compiled `r<row>_c<col>.json` tiles and `manifest.json` separately on a CORS-enabled static host/CDN. Point `config.js` `tileBaseUrl` at the tile directory. Set `allowLiveFallback: false` for production after the required tiles have been hosted and verified.
 
-## Current coverage gap
+## Provenance
 
-This is the first national tiling pipeline, not a complete photorealistic digital twin. It creates meshes from DEM and OSM way data, does not manufacture missing geometry, and does not include high-resolution aerial building textures. Relations, complex structures, vegetation, land-use surface textures and multi-LOD streaming remain future work.
+- OSM data should display attribution to © OpenStreetMap contributors and comply with ODbL.
+- DEM data should retain its provider/source metadata and comply with applicable terms.
+- Unknown/missing elevation values are marked in `terrain.nodataMask`; zeros used as storage placeholders are not reliable terrain measurements.

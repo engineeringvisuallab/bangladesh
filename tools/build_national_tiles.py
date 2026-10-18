@@ -17,51 +17,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
-TILE_SIZE = 3000.0
-GRID_ORIGIN_LAT = 20.5
-GRID_ORIGIN_LON = 88.0
+from world_grid import (GRID_ORIGIN_LAT, GRID_ORIGIN_LON, GRID_REFERENCE_LAT, GRID_VERSION, TILE_SIZE_METERS, geo_at_local, tile_address, tile_address_at_grid, tile_bounds, tile_lat_step, tile_lon_step)
+
+TILE_SIZE = TILE_SIZE_METERS
 OSM_ATTRIBUTION = "© OpenStreetMap contributors, ODbL; https://www.openstreetmap.org/copyright"
 DEM_ATTRIBUTION = "Copernicus DEM GLO-90; see the Copernicus Data Space DEM terms and attribution"
 
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
-
-
-def tile_address(lat: float, lon: float, tile_size: float = TILE_SIZE) -> dict:
-    lat_step = tile_size / 111320.0
-    row = math.floor((lat - GRID_ORIGIN_LAT) / lat_step)
-    center_lat = GRID_ORIGIN_LAT + (row + 0.5) * lat_step
-    cos_lat = math.cos(math.radians(center_lat))
-    if abs(cos_lat) < 1e-6:
-        raise ValueError("Latitude is too close to a pole for this tile grid.")
-    lon_step = tile_size / (111320.0 * cos_lat)
-    col = math.floor((lon - GRID_ORIGIN_LON) / lon_step)
-    center_lon = GRID_ORIGIN_LON + (col + 0.5) * lon_step
-    return {
-        "key": f"r{row}_c{col}", "row": row, "col": col,
-        "origin": {"lat": round(center_lat, 8), "lon": round(center_lon, 8)},
-        "sizeMeters": int(tile_size),
-    }
-
-
-def tile_bounds(address: dict, tile_size: float = TILE_SIZE) -> dict:
-    lat = address["origin"]["lat"]
-    lon = address["origin"]["lon"]
-    half = tile_size / 2
-    lon_scale = 111320.0 * math.cos(math.radians(lat))
-    return {
-        "south": lat - half / 111320.0,
-        "north": lat + half / 111320.0,
-        "west": lon - half / lon_scale,
-        "east": lon + half / lon_scale,
-    }
-
-
-def geo_at_local(origin: dict, x: float, z: float) -> tuple[float, float]:
-    lat = origin["lat"] - z / 111320.0
-    lon = origin["lon"] + x / (111320.0 * math.cos(math.radians(origin["lat"])))
-    return lat, lon
 
 
 def approx_distance_m(a: tuple[float, float], b: tuple[float, float]) -> float:
@@ -139,21 +103,16 @@ def make_candidate_grid(rings: list[dict], tile_size: float = TILE_SIZE) -> dict
     points = all_ring_points(rings)
     south = min(p[0] for p in points); north = max(p[0] for p in points)
     west = min(p[1] for p in points); east = max(p[1] for p in points)
-    lat_step = tile_size / 111320.0
+    lat_step = tile_lat_step(tile_size)
     row_start = math.floor((south - GRID_ORIGIN_LAT) / lat_step) - 1
     row_end = math.floor((north - GRID_ORIGIN_LAT) / lat_step) + 1
     candidates: dict[str, dict] = {}
+    lon_step = tile_lon_step(tile_size)
     for row in range(row_start, row_end + 1):
-        center_lat = GRID_ORIGIN_LAT + (row + 0.5) * lat_step
-        lon_step = tile_size / (111320.0 * math.cos(math.radians(center_lat)))
         col_start = math.floor((west - GRID_ORIGIN_LON) / lon_step) - 1
         col_end = math.floor((east - GRID_ORIGIN_LON) / lon_step) + 1
         for col in range(col_start, col_end + 1):
-            address = {
-                "key": f"r{row}_c{col}", "row": row, "col": col,
-                "origin": {"lat": round(center_lat, 8), "lon": round(GRID_ORIGIN_LON + (col + 0.5) * lon_step, 8)},
-                "sizeMeters": int(tile_size),
-            }
+            address = tile_address_at_grid(row, col, tile_size)
             bounds = tile_bounds(address, tile_size)
             # Reject tiles whose rectangle cannot touch the poly's bounding rectangle.
             if bounds["north"] < south or bounds["south"] > north or bounds["east"] < west or bounds["west"] > east:
@@ -198,12 +157,11 @@ def scanline_intersections(latitude: float, ring: list[tuple[float, float]]) -> 
 def candidate_addresses_in_bbox(south: float, west: float, north: float, east: float,
                                 candidates: dict[str, dict], tile_size: float = TILE_SIZE) -> Iterable[dict]:
     """Iterate only candidate tiles near a geographic bbox; used for big water polygons."""
-    lat_step = tile_size / 111320.0
+    lat_step = tile_lat_step(tile_size)
     row_start = math.floor((south - GRID_ORIGIN_LAT) / lat_step) - 1
     row_end = math.floor((north - GRID_ORIGIN_LAT) / lat_step) + 1
+    lon_step = tile_lon_step(tile_size)
     for row in range(row_start, row_end + 1):
-        center_lat = GRID_ORIGIN_LAT + (row + 0.5) * lat_step
-        lon_step = tile_size / (111320.0 * math.cos(math.radians(center_lat)))
         col_start = math.floor((west - GRID_ORIGIN_LON) / lon_step) - 1
         col_end = math.floor((east - GRID_ORIGIN_LON) / lon_step) + 1
         for col in range(col_start, col_end + 1):
@@ -314,8 +272,8 @@ def main() -> int:
     parser.add_argument("--osm-pbf", required=True, type=Path, help="Geofabrik Bangladesh .osm.pbf extract")
     parser.add_argument("--country-poly", type=Path, help="Geofabrik .poly boundary file (defaults to sibling bangladesh.poly)")
     parser.add_argument("--dem", required=True, type=Path, help="Merged DEM GeoTIFF for Bangladesh (GLO-90 recommended for a first national build)")
-    parser.add_argument("--output-dir", type=Path, default=Path(__file__).resolve().parents[1] / "data" / "national-tiles", help="Output tile folder (kept separate from the small prototype tiles)")
-    parser.add_argument("--work-dir", type=Path, default=Path(__file__).resolve().parents[1] / "data" / "national-build", help="Temporary SQLite work folder")
+    parser.add_argument("--output-dir", type=Path, default=Path(__file__).resolve().parents[1] / "data" / "national-tiles-v2", help="Output grid-v2 tile folder, separate from legacy grid-v1 outputs")
+    parser.add_argument("--work-dir", type=Path, default=Path(__file__).resolve().parents[1] / "data" / "national-build-v2", help="Temporary grid-v2 SQLite work folder")
     parser.add_argument("--segments", type=int, default=32, help="Terrain samples per side minus one; 32 yields 33 x 33 heights per tile")
     parser.add_argument("--tile-size", type=int, default=3000, help="Must remain 3000 to match this game engine")
     parser.add_argument("--max-tiles", type=int, default=0, help="Optional pilot limit; 0 means all Bangladesh tiles")
@@ -376,7 +334,7 @@ def main() -> int:
     db.execute("CREATE INDEX IF NOT EXISTS idx_tile_features_key ON tile_features(tile_key)")
     db.execute("CREATE TABLE IF NOT EXISTS build_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
     selected_keys = set(tiles)
-    tile_signature = hashlib.sha256("\n".join(sorted(selected_keys)).encode("utf-8")).hexdigest()
+    tile_signature = hashlib.sha256((f"grid-v{GRID_VERSION}|ref-lat={GRID_REFERENCE_LAT}|tile={TILE_SIZE}\n" + "\n".join(sorted(selected_keys))).encode("utf-8")).hexdigest()
     pbf_signature = f"{args.osm_pbf.resolve()}|{args.osm_pbf.stat().st_size}|{args.osm_pbf.stat().st_mtime_ns}"
     poly_signature = f"{country_poly.resolve()}|{country_poly.stat().st_size}|{country_poly.stat().st_mtime_ns}"
 
@@ -519,22 +477,23 @@ def main() -> int:
                 xs, ys = transform_coords("EPSG:4326", dem.crs, lons, lats)
                 rows, cols = rowcol(dem.transform, xs, ys)
                 heights: list[float] = []
+                nodata_mask: list[bool] = []
                 nodata_count = 0
                 for rr, cc in zip(rows, cols):
                     if rr < 0 or cc < 0 or rr >= dem_array.shape[0] or cc >= dem_array.shape[1]:
-                        heights.append(0.0); nodata_count += 1
+                        heights.append(0.0); nodata_mask.append(True); nodata_count += 1
                         continue
                     value = dem_array[rr, cc]
                     if np.ma.is_masked(value) or value is None:
-                        heights.append(0.0); nodata_count += 1
+                        heights.append(0.0); nodata_mask.append(True); nodata_count += 1
                         continue
                     raw_value = float(value)
                     h = raw_value * dem_scale + dem_offset
                     if not math.isfinite(h) or (dem.nodata is not None and math.isclose(raw_value, float(dem.nodata))):
-                        heights.append(0.0); nodata_count += 1
+                        heights.append(0.0); nodata_mask.append(True); nodata_count += 1
                     else:
                         # Copernicus elevation is metres; do not synthesize relief or add random noise.
-                        heights.append(round(h, 2))
+                        heights.append(round(h, 2)); nodata_mask.append(False)
                 rows = db.execute("SELECT payload, kind FROM tile_features WHERE tile_key=? ORDER BY osm_id", (key,)).fetchall()
                 elements = [json.loads(row[0]) for row in rows]
                 elements.sort(key=feature_render_priority)
@@ -545,10 +504,10 @@ def main() -> int:
                 total_nodata += nodata_count
                 tile_bounds_data = {k: round(v, 8) for k, v in address["bounds"].items()}
                 payload = {
-                    "schemaVersion": 1,
-                    "tile": {k: address[k] for k in ("key", "row", "col", "origin", "sizeMeters")} | {"bounds": tile_bounds_data, "generatedAt": timestamp},
+                    "schemaVersion": GRID_VERSION,
+                    "tile": {k: address[k] for k in ("key", "row", "col", "origin", "sizeMeters", "gridVersion")} | {"bounds": tile_bounds_data, "generatedAt": timestamp},
                     "terrain": {
-                        "segments": args.segments, "heights": heights,
+                        "segments": args.segments, "heights": heights, "nodataMask": nodata_mask,
                         "source": f"Copernicus DEM GLO-90 local GeoTIFF mosaic; nodata samples filled with 0 (tile nodata samples: {nodata_count})",
                         "nodataSamples": nodata_count,
                         "sampleCount": len(heights),
@@ -563,8 +522,9 @@ def main() -> int:
                     "provenance": {
                         "osm": OSM_ATTRIBUTION,
                         "elevation": DEM_ATTRIBUTION,
-                        "builder": "Bangladesh Open World Stage 3 national offline tile compiler",
-                        "note": "3 km tiles; way-based OSM features only in this stage. Unknown building heights are estimated by the viewer. Review missing DEM samples and feature coverage.",
+                        "builder": "Bangladesh Open World Stage 5 national offline tile compiler",
+                        "grid": f"schema v{GRID_VERSION}; fixed-reference equirectangular grid at {GRID_REFERENCE_LAT}° N",
+                        "note": "3 km grid tiles; OSM way features only. Unknown building heights are estimated. Rebuild schema v1 tiles and run seam audit before publishing.",
                     },
                 }
                 out_file = args.output_dir / f"{key}.json"
@@ -581,16 +541,17 @@ def main() -> int:
         return 4
 
     manifest = {
-        "schemaVersion": 1,
+        "schemaVersion": GRID_VERSION,
+        "gridVersion": GRID_VERSION,
         "dataset": "Bangladesh Open World nationwide tiles",
         "generatedAt": timestamp,
         "tileSizeMeters": int(TILE_SIZE),
-        "grid": {"originLatitude": GRID_ORIGIN_LAT, "originLongitude": GRID_ORIGIN_LON, "tileSizeMeters": int(TILE_SIZE)},
+        "grid": {"originLatitude": GRID_ORIGIN_LAT, "originLongitude": GRID_ORIGIN_LON, "referenceLatitude": GRID_REFERENCE_LAT, "projection": "fixed-reference equirectangular", "gridVersion": GRID_VERSION, "tileSizeMeters": int(TILE_SIZE)},
         "tileCount": len(tile_manifest),
         "totalFeatureCopies": total_features,
         "totalNodataSamples": total_nodata,
         "sources": {"osm": OSM_ATTRIBUTION, "elevation": DEM_ATTRIBUTION},
-        "note": "Upload tile JSON files and manifest to a static object host/CDN, not to a GitHub source repository. Tile list covers .poly boundary grid cells; OSM way features only; validate visual quality before use.",
+        "note": "Schema v2 uses a fixed-reference coordinate grid so neighboring tile edges align. Upload tiles and manifest to a static object host/CDN; run tools/audit_tile_seams.py before publishing. Rebuild older schema v1 tiles.",
         "tiles": tile_manifest,
     }
     manifest_path = args.output_dir / "manifest.json"
@@ -605,7 +566,7 @@ def main() -> int:
     if height_sample_count and total_nodata / height_sample_count > 0.05:
         print("WARNING: more than 5% of the terrain samples are no-data/outside the DEM. Review coverage before uploading the dataset.", file=sys.stderr)
     print(f"Manifest: {manifest_path}")
-    print("Next: test sample tiles locally, upload the JSON files to object storage/CDN, and set config.js tileBaseUrl.")
+    print("Next: run tools/audit_tile_seams.py --tiles <output-dir> before publishing to object storage/CDN.")
     db.close()
     return 0
 

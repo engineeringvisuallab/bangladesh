@@ -34,7 +34,7 @@
     <aside id="worldPanel" class="world-panel glass">
       <div class="panel-kicker">WORLD NAVIGATION</div>
       <h2>Explore Bangladesh</h2>
-      <p class="panel-copy">This is a streamed 3D world, not a map layer. Nearby buildings use detailed footprint geometry inside a 100 m camera radius; distant buildings switch to low-detail blocks. The terrain detail is still limited by the source DEM resolution.</p>
+      <p class="panel-copy">This is a streamed 3D world, not a map layer. Nearby buildings use detailed footprint geometry inside a 100 m camera radius; distant buildings switch to low-detail blocks. The terrain detail is still limited by the source DEM resolution. Stage 5 uses one fixed-reference grid, reconciles small shared-edge height differences between loaded tiles, and smooths border normals.</p>
 
       <label for="locationSelect">Fast travel</label>
       <select id="locationSelect">
@@ -80,7 +80,7 @@
         <div class="hero-eyebrow"><span class="dot"></span> REAL-WORLD DATA · 3D GEOMETRY</div>
         <div class="hero-title">BANGLADESH<br /><em>OPEN WORLD</em></div>
         <p>A browser-based, game-like 3D world. Terrain and mapped features are rebuilt as 3D objects at geographic coordinates — not displayed as a 2D map. The streaming engine keeps a bounded set of world tiles, looks ahead in the camera direction and switches buildings between detailed footprints within 100 m and merged low-detail blocks farther away.</p>
-        <div class="feature-pills"><span>Terrain mesh</span><span>3D road ribbons</span><span>3D railway tracks</span><span>100 m building LOD</span><span>Auto tile streaming</span><span>Free-flight camera</span></div>
+        <div class="feature-pills"><span>Terrain mesh</span><span>3D road ribbons</span><span>3D railway tracks</span><span>100 m building LOD</span><span>Auto tile streaming</span><span>Free-flight camera</span><span>Seam-aligned grid v2</span></div>
         <button id="enterButton" class="enter-button">ENTER THE WORLD <span>↗</span></button>
         <div id="loadingMessage" class="loading-message">Loads one real-data tile first; nearby static tiles are prefetched. If static tiles are absent, live public data services are attempted on demand.</div>
         <div class="start-foot">PROTOTYPE · WORLD STREAMING · NO SATELLITE MAP TILES</div>

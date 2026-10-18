@@ -17,10 +17,9 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
+from world_grid import GRID_COS, GRID_REFERENCE_LAT, GRID_VERSION, TILE_SIZE_METERS, geo_at_local, tile_address, tile_bounds
+
 ROOT = Path(__file__).resolve().parents[1]
-TILE_SIZE_METERS = 3000
-GRID_ORIGIN_LAT = 20.5
-GRID_ORIGIN_LON = 88.0
 ELEVATION_URL = "https://api.open-meteo.com/v1/elevation"
 OVERPASS_ENDPOINTS = (
     "https://overpass-api.de/api/interpreter",
@@ -31,33 +30,6 @@ USER_AGENT = "BangladeshOpenWorldPrototype/0.2 (static tile data builder)"
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
-
-
-def tile_address(lat: float, lon: float, tile_size: int = TILE_SIZE_METERS) -> dict:
-    """Keep this arithmetic in sync with tileAddressFor() in src/main.js."""
-    lat_step = tile_size / 111320.0
-    row = math.floor((lat - GRID_ORIGIN_LAT) / lat_step)
-    center_lat = GRID_ORIGIN_LAT + (row + 0.5) * lat_step
-    cos_lat = math.cos(math.radians(center_lat))
-    if abs(cos_lat) < 1e-6:
-        raise ValueError("Latitude is too close to a pole for this local tile grid.")
-    lon_step = tile_size / (111320.0 * cos_lat)
-    col = math.floor((lon - GRID_ORIGIN_LON) / lon_step)
-    center_lon = GRID_ORIGIN_LON + (col + 0.5) * lon_step
-    return {
-        "key": f"r{row}_c{col}",
-        "row": row,
-        "col": col,
-        "origin": {"lat": round(center_lat, 8), "lon": round(center_lon, 8)},
-        "sizeMeters": tile_size,
-    }
-
-
-def geo_at_local(origin: dict, x: float, z: float) -> tuple[float, float]:
-    lat = origin["lat"] - z / 111320.0
-    lon_scale = 111320.0 * math.cos(math.radians(origin["lat"]))
-    lon = origin["lon"] + x / lon_scale
-    return lat, lon
 
 
 def http_json(url: str, *, data: bytes | None = None, content_type: str | None = None, timeout: int = 60):
@@ -87,7 +59,7 @@ def retry_call(label, fn, attempts: int = 4):
     raise RuntimeError(f"{label} failed after {attempts} attempts: {last_error}") from last_error
 
 
-def fetch_elevations(origin: dict, segments: int) -> tuple[list[float], int]:
+def fetch_elevations(origin: dict, segments: int) -> tuple[list[float], list[bool], int]:
     grid_points: list[tuple[float, float]] = []
     for j in range(segments + 1):
         for i in range(segments + 1):
@@ -99,6 +71,7 @@ def fetch_elevations(origin: dict, segments: int) -> tuple[list[float], int]:
     chunk_size = 90
     chunks = [grid_points[i:i + chunk_size] for i in range(0, len(grid_points), chunk_size)]
     heights: list[float] = []
+    nodata_mask: list[bool] = []
     for index, chunk in enumerate(chunks, start=1):
         query = urlencode({
             "latitude": ",".join(f"{lat:.6f}" for lat, _ in chunk),
@@ -112,19 +85,21 @@ def fetch_elevations(origin: dict, segments: int) -> tuple[list[float], int]:
         for value in values:
             try:
                 numeric = float(value)
-                heights.append(numeric if math.isfinite(numeric) else 0.0)
+                valid = math.isfinite(numeric)
             except (TypeError, ValueError):
-                heights.append(0.0)
+                numeric, valid = 0.0, False
+            heights.append(numeric if valid else 0.0)
+            nodata_mask.append(not valid)
         print(f"Elevation: {index}/{len(chunks)} batches complete")
         time.sleep(0.15)
-    return heights, len(chunks)
+    return heights, nodata_mask, len(chunks)
 
 
 def fetch_osm(origin: dict) -> tuple[dict, str]:
     half = TILE_SIZE_METERS / 2
     south = origin["lat"] - half / 111320.0
     north = origin["lat"] + half / 111320.0
-    lon_delta = half / (111320.0 * math.cos(math.radians(origin["lat"])))
+    lon_delta = half / (111320.0 * GRID_COS)
     west = origin["lon"] - lon_delta
     east = origin["lon"] + lon_delta
     bbox = f"{south:.7f},{west:.7f},{north:.7f},{east:.7f}"
@@ -186,10 +161,11 @@ def main() -> int:
 
     if args.skip_elevation:
         heights = [0.0] * ((segments + 1) ** 2)
+        nodata_mask = [True] * len(heights)
         elevation_source = "not included — zero-height placeholder, NOT real terrain"
         elevation_batches = 0
     else:
-        heights, elevation_batches = fetch_elevations(origin, segments)
+        heights, nodata_mask, elevation_batches = fetch_elevations(origin, segments)
         elevation_source = "Copernicus DEM GLO-90 via Open-Meteo Elevation API"
 
     if args.skip_osm:
@@ -205,20 +181,18 @@ def main() -> int:
     destination = output_dir / f"{address['key']}.json"
 
     payload = {
-        "schemaVersion": 1,
+        "schemaVersion": GRID_VERSION,
         "tile": {
             **address,
-            "bounds": {
-                "south": round(origin["lat"] - (TILE_SIZE_METERS / 2) / 111320.0, 8),
-                "north": round(origin["lat"] + (TILE_SIZE_METERS / 2) / 111320.0, 8),
-                "west": round(origin["lon"] - (TILE_SIZE_METERS / 2) / (111320.0 * math.cos(math.radians(origin["lat"]))), 8),
-                "east": round(origin["lon"] + (TILE_SIZE_METERS / 2) / (111320.0 * math.cos(math.radians(origin["lat"]))), 8),
-            },
+            "bounds": {k: round(v, 8) for k, v in tile_bounds(address, TILE_SIZE_METERS).items()},
             "generatedAt": utc_now(),
         },
         "terrain": {
             "segments": segments,
             "heights": [round(h, 2) for h in heights],
+            "nodataMask": nodata_mask,
+            "nodataSamples": sum(nodata_mask),
+            "sampleCount": len(heights),
             "source": elevation_source,
             "batches": elevation_batches,
         },
@@ -231,8 +205,9 @@ def main() -> int:
         "provenance": {
             "osm": "© OpenStreetMap contributors, ODbL; https://www.openstreetmap.org/copyright",
             "elevation": "Copernicus DEM GLO-90 accessed via Open-Meteo Elevation API; https://open-meteo.com/en/docs/elevation-api",
-            "builder": "Bangladesh Open World Stage 2 tile builder",
-            "note": "OSM output is capped by feature class for a prototype. Inspect coverage before claiming completeness.",
+            "builder": "Bangladesh Open World Stage 5 tile builder",
+            "grid": f"schema v{GRID_VERSION}; fixed-reference equirectangular grid at {GRID_REFERENCE_LAT}° N",
+            "note": "OSM output is capped by feature class for a prototype. Rebuild older v1 tiles; verify edge continuity with audit_tile_seams.py.",
         },
     }
 
@@ -244,7 +219,8 @@ def main() -> int:
     print(f"\nSaved: {destination}")
     print(f"Size: {size_kb:,.1f} KiB")
     print(f"OpenStreetMap ways: {len(payload['osm']['elements']):,}")
-    print("Next: commit this JSON file with the site, then reload the same tile in the browser.")
+    print(f"Schema/grid: v{GRID_VERSION}; no-data samples: {sum(nodata_mask)} / {len(nodata_mask)}")
+    print("Next: run tools/validate_tile.py and audit neighboring tiles with tools/audit_tile_seams.py.")
     if args.skip_elevation:
         print("WARNING: --skip-elevation created a zero-height placeholder, not a real terrain tile.", file=sys.stderr)
     return 0

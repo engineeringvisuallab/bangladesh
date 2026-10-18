@@ -2,7 +2,10 @@ import * as THREE from 'three';
 import { Sky } from 'three/addons/objects/Sky.js';
 
 const $ = (id) => document.getElementById(id);
-const TILE_SIZE = 3000; // metres across; one streamed world tile
+const TILE_SIZE = 3000; // coordinate metres across; one streamed world tile
+const GRID_VERSION = 2;
+const GRID_REFERENCE_LAT = 23.5; // fixed projection reference keeps all neighboring tile edges aligned
+const GRID_COS = Math.cos(THREE.MathUtils.degToRad(GRID_REFERENCE_LAT));
 const GRID_SEGMENTS = 32; // ~94 m spacing for the broad-resolution GLO-90 DEM
 const NEAR_DETAIL_RADIUS_M = 100; // full building geometry inside this camera distance
 const TILE_DEMOTE_DISTANCE_M = 3600;
@@ -126,31 +129,30 @@ function setLoadingVeil(show, title = 'Building world tile', detail = 'Fetching 
   $('veilDetail').textContent = detail;
 }
 function centerWorldCoords(lat, lon, around = origin) {
-  const x = (lon - around.lon) * 111320 * Math.cos(THREE.MathUtils.degToRad(around.lat));
+  // One fixed equirectangular reference avoids row-dependent tile offsets and edge cracks.
+  const x = (lon - around.lon) * 111320 * GRID_COS;
   const z = (around.lat - lat) * 111320;
   return { x, z };
 }
-// Fixed geographic grid: the same coordinates always resolve to the same static tile file.
-// Each row's longitude spacing is adjusted for its latitude so tiles remain approximately 3 km wide.
+// Fixed-reference grid v2: the same coordinates always resolve to the same file; every row uses the same longitude step so tile edges align.
 function tileAddressAtGrid(row, col) {
   const latStep = TILE_SIZE / 111320;
+  const lonStep = TILE_SIZE / (111320 * GRID_COS);
   const centerLat = TILE_GRID_LAT_ORIGIN + (row + 0.5) * latStep;
-  const lonStep = TILE_SIZE / (111320 * Math.cos(THREE.MathUtils.degToRad(centerLat)));
   const centerLon = TILE_GRID_LON_ORIGIN + (col + 0.5) * lonStep;
-  return { row, col, key: `r${row}_c${col}`, origin: { lat: centerLat, lon: centerLon } };
+  return { row, col, key: `r${row}_c${col}`, origin: { lat: centerLat, lon: centerLon }, sizeMeters: TILE_SIZE, gridVersion: GRID_VERSION };
 }
 function tileAddressFor(lat, lon) {
   const latStep = TILE_SIZE / 111320;
+  const lonStep = TILE_SIZE / (111320 * GRID_COS);
   const row = Math.floor((lat - TILE_GRID_LAT_ORIGIN) / latStep);
-  const centerLat = TILE_GRID_LAT_ORIGIN + (row + 0.5) * latStep;
-  const lonStep = TILE_SIZE / (111320 * Math.cos(THREE.MathUtils.degToRad(centerLat)));
   const col = Math.floor((lon - TILE_GRID_LON_ORIGIN) / lonStep);
   return tileAddressAtGrid(row, col);
 }
 function latLonAtWorld(x, z) {
   return {
     lat: origin.lat - z / 111320,
-    lon: origin.lon + x / (111320 * Math.cos(THREE.MathUtils.degToRad(origin.lat))),
+    lon: origin.lon + x / (111320 * GRID_COS),
   };
 }
 function currentLatLon() { return latLonAtWorld(camera.position.x, camera.position.z); }
@@ -201,6 +203,26 @@ function fallbackHeight(lat, lon) {
   return Math.max(0, 6 + wave);
 }
 
+function makeFallbackTerrain(originPoint) {
+  // Illustrative terrain only; this is never labeled as measured DEM data.
+  const segments = GRID_SEGMENTS;
+  const points = [];
+  const heights = [];
+  const nodataMask = [];
+  for (let j = 0; j <= segments; j++) {
+    for (let i = 0; i <= segments; i++) {
+      const x = (i / segments - 0.5) * TILE_SIZE;
+      const z = (j / segments - 0.5) * TILE_SIZE;
+      const lat = originPoint.lat - z / 111320;
+      const lon = originPoint.lon + x / (111320 * GRID_COS);
+      points.push({ i, j, x, z, lat, lon });
+      heights.push(fallbackHeight(lat, lon));
+      nodataMask.push(true);
+    }
+  }
+  return { segments, points, heights, nodataMask, sampleCount: heights.length, nodataSamples: heights.length, source: 'fallback — illustrative terrain, NOT measured elevation' };
+}
+
 async function fetchPrebuiltTile(address) {
   // Static tiles are served from the repository first. A missing file means this tile has not
   // been built yet, in which case the prototype may fall back to the live public endpoints.
@@ -216,10 +238,18 @@ async function fetchPrebuiltTile(address) {
   const payload = await response.json();
   const terrain = payload?.terrain;
   const elements = payload?.osm?.elements;
-  if (payload?.tile?.key !== address.key || !Number.isFinite(terrain?.segments) ||
+  const savedOrigin = payload?.tile?.origin;
+  const originMatches = savedOrigin && Number.isFinite(savedOrigin.lat) && Number.isFinite(savedOrigin.lon) &&
+    Math.abs(savedOrigin.lat - address.origin.lat) <= 0.000001 &&
+    Math.abs(savedOrigin.lon - address.origin.lon) <= 0.000001;
+  if (payload?.schemaVersion !== GRID_VERSION || payload?.tile?.gridVersion !== GRID_VERSION ||
+      payload?.tile?.key !== address.key || payload?.tile?.row !== address.row || payload?.tile?.col !== address.col ||
+      payload?.tile?.sizeMeters !== TILE_SIZE || !originMatches || !Number.isInteger(terrain?.segments) ||
       !Array.isArray(terrain?.heights) || terrain.heights.length !== (terrain.segments + 1) ** 2 ||
-      !Array.isArray(elements)) {
-    throw new Error(`Prebuilt tile ${address.key} has an invalid schema. Rebuild it with tools/build_tile.py.`);
+      terrain.heights.some((value) => !Number.isFinite(value)) ||
+      !Array.isArray(terrain?.nodataMask) || terrain.nodataMask.length !== terrain.heights.length ||
+      terrain.nodataMask.some((value) => typeof value !== 'boolean') || !Array.isArray(elements)) {
+    throw new Error(`Prebuilt tile ${address.key} uses an old, misplaced, or invalid schema. Rebuild it with the Stage 5 tools (grid v${GRID_VERSION}).`);
   }
   return payload;
 }
@@ -234,17 +264,18 @@ async function fetchTerrain(originPoint) {
       points.push({
         i, j, x, z,
         lat: originPoint.lat - z / 111320,
-        lon: originPoint.lon + x / (111320 * Math.cos(THREE.MathUtils.degToRad(originPoint.lat))),
+        lon: originPoint.lon + x / (111320 * GRID_COS),
       });
     }
   }
-  const cacheKey = `bdow-dem-v2-${tileAddressFor(originPoint.lat, originPoint.lon).key}`;
+  const cacheKey = `bdow-dem-v3-grid${GRID_VERSION}-${tileAddressFor(originPoint.lat, originPoint.lon).key}`;
   try {
     const cached = sessionStorage.getItem(cacheKey);
     if (cached) {
       const parsed = JSON.parse(cached);
       if (Array.isArray(parsed.heights) && parsed.heights.length === points.length) {
-        return { segments, points, heights: parsed.heights, source: 'cache' };
+        const nodataMask = Array.isArray(parsed.nodataMask) && parsed.nodataMask.length === points.length ? parsed.nodataMask : new Array(points.length).fill(false);
+        return { segments, points, heights: parsed.heights, nodataMask, nodataSamples: nodataMask.filter(Boolean).length, sampleCount: points.length, source: 'cache' };
       }
     }
   } catch { /* storage disabled or full: simply fetch again */ }
@@ -252,6 +283,7 @@ async function fetchTerrain(originPoint) {
   const chunks = [];
   for (let i = 0; i < points.length; i += 95) chunks.push(points.slice(i, i + 95));
   const allValues = new Array(points.length).fill(null);
+  const allNoData = new Array(points.length).fill(false);
   let callsDone = 0;
   for (let chunkStart = 0; chunkStart < chunks.length; chunkStart += 3) {
     const chunkGroup = chunks.slice(chunkStart, chunkStart + 3);
@@ -267,20 +299,25 @@ async function fetchTerrain(originPoint) {
       return { firstPointIndex, values: json.elevation };
     }));
     for (const response of responses) {
-      response.values.forEach((h, index) => { allValues[response.firstPointIndex + index] = Number.isFinite(h) ? h : 0; });
+      response.values.forEach((h, index) => {
+        const pointIndex = response.firstPointIndex + index;
+        const valid = Number.isFinite(h);
+        allValues[pointIndex] = valid ? h : 0;
+        allNoData[pointIndex] = !valid;
+      });
       callsDone++;
     }
     $('veilDetail').textContent = `Sampling real Copernicus GLO-90 elevations… ${Math.min(chunkStart + chunkGroup.length, chunks.length)} / ${chunks.length} batches`;
   }
-  try { sessionStorage.setItem(cacheKey, JSON.stringify({ heights: allValues })); } catch { /* optional cache */ }
-  return { segments, points, heights: allValues, source: 'Open-Meteo / Copernicus GLO-90' };
+  try { sessionStorage.setItem(cacheKey, JSON.stringify({ heights: allValues, nodataMask: allNoData })); } catch { /* optional cache */ }
+  return { segments, points, heights: allValues, nodataMask: allNoData, nodataSamples: allNoData.filter(Boolean).length, sampleCount: allValues.length, source: 'Open-Meteo / Copernicus GLO-90' };
 }
 
 async function fetchOSM(originPoint) {
   const half = TILE_SIZE / 2;
   const south = originPoint.lat - half / 111320;
   const north = originPoint.lat + half / 111320;
-  const lonDelta = half / (111320 * Math.cos(THREE.MathUtils.degToRad(originPoint.lat)));
+  const lonDelta = half / (111320 * GRID_COS);
   const west = originPoint.lon - lonDelta;
   const east = originPoint.lon + lonDelta;
   const bbox = `${south.toFixed(6)},${west.toFixed(6)},${north.toFixed(6)},${east.toFixed(6)}`;
@@ -758,6 +795,153 @@ function currentTileRecord() {
   const address = tileAddressFor(pos.lat, pos.lon);
   return residentTiles.get(address.key) || activeTileKey && residentTiles.get(activeTileKey) || null;
 }
+
+function terrainEdgeIndices(tile, side) {
+  const segments = tile.segments;
+  const width = segments + 1;
+  if (side === 'west') return Array.from({ length: width }, (_, j) => j * width);
+  if (side === 'east') return Array.from({ length: width }, (_, j) => j * width + segments);
+  if (side === 'north') return Array.from({ length: width }, (_, i) => i);
+  if (side === 'south') return Array.from({ length: width }, (_, i) => segments * width + i);
+  return [];
+}
+
+function reconcileTerrainPair(a, sideA, b, sideB) {
+  if (!a || !b || a.tile.segments !== b.tile.segments) return false;
+  // Do not quietly average extreme edge jumps; those usually mean mismatched or broken source data.
+  const MAX_EDGE_BLEND_M = 20;
+  const idsA = terrainEdgeIndices(a.tile, sideA);
+  const idsB = terrainEdgeIndices(b.tile, sideB);
+  let changedA = false;
+  let changedB = false;
+  let largeMismatchCount = 0;
+  let maximumMismatch = 0;
+  for (let k = 0; k < idsA.length; k++) {
+    const ia = idsA[k], ib = idsB[k];
+    const ha = a.tile.heights[ia], hb = b.tile.heights[ib];
+    if (!Number.isFinite(ha) || !Number.isFinite(hb)) continue;
+    const maskA = Array.isArray(a.tile.nodataMask) ? Boolean(a.tile.nodataMask[ia]) : false;
+    const maskB = Array.isArray(b.tile.nodataMask) ? Boolean(b.tile.nodataMask[ib]) : false;
+    let target;
+    if (!maskA && !maskB) {
+      const mismatch = Math.abs(ha - hb);
+      if (mismatch > MAX_EDGE_BLEND_M) {
+        largeMismatchCount++;
+        maximumMismatch = Math.max(maximumMismatch, mismatch);
+        continue;
+      }
+      target = (ha + hb) / 2;
+    } else if (!maskA && maskB) {
+      target = ha;
+    } else if (maskA && !maskB) {
+      target = hb;
+    } else {
+      // Both source samples are marked no-data; use the average of the current fallback values
+      // solely for visual continuity, while retaining their no-data flags.
+      target = (ha + hb) / 2;
+    }
+    const diffA = Math.abs(ha - target);
+    const diffB = Math.abs(hb - target);
+    if (diffA > 0.0001) {
+      a.tile.heights[ia] = target;
+      a.tile.seamAdjustedMask[ia] = true;
+      changedA = true;
+    }
+    if (diffB > 0.0001) {
+      b.tile.heights[ib] = target;
+      b.tile.seamAdjustedMask[ib] = true;
+      changedB = true;
+    }
+  }
+  if (largeMismatchCount) {
+    console.warn(`Terrain edge mismatch (${maximumMismatch.toFixed(2)} m max across ${largeMismatchCount} samples) between ${a.key} and ${b.key}; large differences were kept. Run tools/audit_tile_seams.py.`);
+  }
+  if (changedA) a.tile.seamAdjustedSamples = a.tile.seamAdjustedMask.filter(Boolean).length;
+  if (changedB) b.tile.seamAdjustedSamples = b.tile.seamAdjustedMask.filter(Boolean).length;
+  return changedA || changedB;
+}
+
+function residentNeighbors(record) {
+  const row = record.address.row;
+  const col = record.address.col;
+  return [
+    { record: residentTiles.get(`r${row}_c${col - 1}`), thisSide: 'west', otherSide: 'east' },
+    { record: residentTiles.get(`r${row}_c${col + 1}`), thisSide: 'east', otherSide: 'west' },
+    // Grid rows increase northward because latitude increases with row.
+    { record: residentTiles.get(`r${row - 1}_c${col}`), thisSide: 'south', otherSide: 'north' },
+    { record: residentTiles.get(`r${row + 1}_c${col}`), thisSide: 'north', otherSide: 'south' },
+  ].filter((item) => item.record);
+}
+
+function terrainMeshFor(record) {
+  return record.group.children.find((child) => child.name === 'REAL_DEM_TERRAIN_MESH') || null;
+}
+
+function rebuildTerrainOnly(record) {
+  const previous = terrainMeshFor(record);
+  if (previous) {
+    record.group.remove(previous);
+    disposeGroup(previous);
+  }
+  record.group.add(createTerrain(record.tile));
+}
+
+function smoothSharedTerrainNormals(a, sideA, b, sideB) {
+  const meshA = terrainMeshFor(a), meshB = terrainMeshFor(b);
+  if (!meshA || !meshB || a.tile.segments !== b.tile.segments) return;
+  const normalA = meshA.geometry.getAttribute('normal');
+  const normalB = meshB.geometry.getAttribute('normal');
+  if (!normalA || !normalB) return;
+  const idsA = terrainEdgeIndices(a.tile, sideA);
+  const idsB = terrainEdgeIndices(b.tile, sideB);
+  const av = new THREE.Vector3(), bv = new THREE.Vector3(), average = new THREE.Vector3();
+  for (let i = 0; i < idsA.length; i++) {
+    const ia = idsA[i], ib = idsB[i];
+    const heightA = a.tile.heights[ia], heightB = b.tile.heights[ib];
+    if (!Number.isFinite(heightA) || !Number.isFinite(heightB) || Math.abs(heightA - heightB) > 20) continue;
+    av.fromBufferAttribute(normalA, ia);
+    bv.fromBufferAttribute(normalB, ib);
+    average.copy(av).add(bv).normalize();
+    normalA.setXYZ(ia, average.x, average.y, average.z);
+    normalB.setXYZ(ib, average.x, average.y, average.z);
+  }
+  normalA.needsUpdate = true;
+  normalB.needsUpdate = true;
+}
+
+function reconcileResidentTerrain(record) {
+  const visualsToRebuild = new Set();
+  for (const neighborInfo of residentNeighbors(record)) {
+    const neighbor = neighborInfo.record;
+    const currentRow = record.address.row;
+    const currentCol = record.address.col;
+    const neighborRow = neighbor.address.row;
+    const neighborCol = neighbor.address.col;
+    let changed = false;
+    if (neighborRow === currentRow && neighborCol === currentCol - 1) {
+      changed = reconcileTerrainPair(neighbor, 'east', record, 'west');
+    } else if (neighborRow === currentRow && neighborCol === currentCol + 1) {
+      changed = reconcileTerrainPair(record, 'east', neighbor, 'west');
+    } else if (neighborRow === currentRow - 1 && neighborCol === currentCol) {
+      changed = reconcileTerrainPair(neighbor, 'north', record, 'south');
+    } else if (neighborRow === currentRow + 1 && neighborCol === currentCol) {
+      changed = reconcileTerrainPair(record, 'north', neighbor, 'south');
+    }
+    if (changed) visualsToRebuild.add(neighbor);
+  }
+  return visualsToRebuild;
+}
+
+function smoothResidentTerrainAround(record) {
+  for (const item of residentNeighbors(record)) {
+    const neighbor = item.record;
+    const row = record.address.row, col = record.address.col;
+    if (neighbor.address.row === row && neighbor.address.col === col - 1) smoothSharedTerrainNormals(neighbor, 'east', record, 'west');
+    else if (neighbor.address.row === row && neighbor.address.col === col + 1) smoothSharedTerrainNormals(record, 'east', neighbor, 'west');
+    else if (neighbor.address.row === row - 1 && neighbor.address.col === col) smoothSharedTerrainNormals(neighbor, 'north', record, 'south');
+    else if (neighbor.address.row === row + 1 && neighbor.address.col === col) smoothSharedTerrainNormals(record, 'north', neighbor, 'south');
+  }
+}
 function groundHeightAtCamera() {
   const record = currentTileRecord();
   if (!record) return 0;
@@ -774,6 +958,7 @@ function rebuildTileVisuals(record, quality) {
   record.group.add(record.stats.group);
   record.quality = quality;
   positionResidentTile(record);
+  smoothResidentTerrainAround(record);
 }
 function updateActiveTileStatus(record) {
   if (!record) return;
@@ -786,7 +971,7 @@ function updateActiveTileStatus(record) {
     : (record.osmError ? 'OSM request failed · trying again when needed' : 'No mapped geometry in this tile'));
   setStatus('buildingState', record.osmReal ? `${record.stats.buildings} 3D building footprints · ${NEAR_DETAIL_RADIUS_M} m full-detail radius` : 'No building geometry included');
   const local = tileLocalXZ(record);
-  setStatus('tileState', `${record.key} · ${residentTiles.size} tiles resident · ${record.quality.toUpperCase()} LOD`);
+  setStatus('tileState', `${record.key} · ${residentTiles.size} tiles resident · ${record.quality.toUpperCase()} LOD · ${record.tile.seamAdjustedSamples || 0} edge samples aligned`);
 }
 
 function distanceToRecord(record) {
@@ -841,6 +1026,9 @@ async function loadTileRecord(address, { allowLive = true, quality = 'near' } = 
           segments: prebuilt.terrain.segments,
           points: [],
           heights: prebuilt.terrain.heights,
+          nodataMask: prebuilt.terrain.nodataMask,
+          nodataSamples: prebuilt.terrain.nodataSamples || 0,
+          sampleCount: prebuilt.terrain.sampleCount || prebuilt.terrain.heights.length,
           source: prebuilt.terrain.source || 'prebuilt elevation tile',
         };
         osmData = prebuilt.osm;
@@ -873,6 +1061,10 @@ async function loadTileRecord(address, { allowLive = true, quality = 'near' } = 
     }
 
     const tile = { key: address.key, origin: address.origin, ...elevationData };
+    tile.nodataMask = Array.isArray(tile.nodataMask) && tile.nodataMask.length === tile.heights.length
+      ? tile.nodataMask : new Array(tile.heights.length).fill(false);
+    tile.seamAdjustedMask = new Array(tile.heights.length).fill(false);
+    tile.seamAdjustedSamples = 0;
     const group = new THREE.Group();
     group.name = `WORLD_TILE_${address.key}`;
     const record = {
@@ -880,10 +1072,14 @@ async function loadTileRecord(address, { allowLive = true, quality = 'near' } = 
       terrainReal, osmReal, terrainSource: elevationData.source || 'unknown elevation source',
       dataMode, quality, stats: null, lastUsed: performance.now(),
     };
-    // The tile's mesh coordinates are local to its tile origin; the parent transform locates it in the world.
-    rebuildTileVisuals(record, quality);
+    // Register before geometry creation so arriving neighbors can reconcile their shared edge.
     worldGroup.add(group);
     residentTiles.set(record.key, record);
+    const neighborsToRebuild = reconcileResidentTerrain(record);
+    rebuildTileVisuals(record, quality);
+    for (const neighbor of neighborsToRebuild) rebuildTerrainOnly(neighbor);
+    smoothResidentTerrainAround(record);
+    for (const neighbor of neighborsToRebuild) smoothResidentTerrainAround(neighbor);
     tileRetryAfter.delete(record.key);
     evictDistantTiles();
     return record;

@@ -1,3 +1,5 @@
+> Historical Stage 4 notes. Stage 5 replaces the old row-dependent grid with grid v2 and requires rebuilding old tile JSON. Use `README.md` and `DATA-PIPELINE.md` for current instructions.
+
 # Stage 4 — Implemented Streaming World Engine
 
 ## Implemented in this package

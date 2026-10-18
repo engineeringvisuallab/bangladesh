@@ -11,3 +11,6 @@ data/national-tiles/
 # Python tool outputs
 __pycache__/
 *.py[cod]
+data/pilot-tiles-v2/
+data/national-tiles-v2/
+data/national-build-v2/

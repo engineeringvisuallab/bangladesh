@@ -1,35 +1,46 @@
-# Bangladesh Open World — Stage 4: Streaming World Engine
+# Bangladesh Open World — Stage 5: Seam-Aligned Streaming World
 
-This is a **Three.js 3D world**, not an embedded map viewer. Roads, railways, waterways, building footprints and terrain are rebuilt as three-dimensional scene geometry from geographic data. Stage 4 adds continuous multi-tile streaming and near/far building Level of Detail (LOD).
+A browser-based Three.js world, not an embedded Google/3D map viewer. Geographic source data is rebuilt into Three.js terrain, road, rail, waterway and building geometry. Stage 5 fixes a real coordinate-grid problem from earlier versions and adds runtime edge reconciliation, shared terrain normals, a schema-versioned static tile format, and an offline edge audit.
 
-> **Honest status:** This ZIP contains the app and the data-processing tools, but does not contain the national Bangladesh GIS dataset or generated nationwide world tiles. Where a static tile is hosted, the app streams it from that tile store. If a tile is missing and live fallback is enabled, the prototype may request terrain and OSM geometry from public services. This is a functioning architecture prototype, not yet a complete photorealistic Bangladesh dataset.
+> **Honest status:** This package includes code and a processing pipeline, not a complete Bangladesh dataset. No live Bangladesh GIS data was downloaded into this ZIP. National data must be downloaded and compiled on the user's PC before nationwide prebuilt streaming is available.
 
-## Stage 4 additions
+## Stage 5 changes
 
-- **100 m building detail radius:** each building switches between a detailed extruded footprint and a simpler box LOD based on camera distance. This is a visual LOD radius, not a guarantee that every building exists in the source data.
-- **Look-ahead streaming:** the app estimates the tile ahead of the camera and starts loading it before the player reaches the tile boundary.
-- **Multiple resident world tiles:** the renderer keeps surrounding 3 km tiles loaded instead of deleting the previous tile whenever the camera crosses a grid boundary.
-- **Far-tile LOD:** neighboring tiles initially render terrain, major roads, rails, waterways and merged simple building blocks. When a tile becomes the current/look-ahead tile, it can be promoted to detailed geometry.
-- **Memory cap:** the app keeps a bounded resident-tile cache and disposes distant tile geometry as needed.
-- **Background movement:** loading a neighbouring tile does not globally freeze the camera. Only the initial entry or an explicit fast-travel action shows the full-screen loader.
-- **Retry cooldown:** unavailable tiles are not requested repeatedly every animation frame.
+- **Fixed-reference coordinate grid v2:** every row uses one constant longitude step, which makes the projected edges of adjacent 3 km tiles line up. Earlier versions changed longitude spacing by latitude, which could offset north/south neighbors.
+- **Runtime shared-edge reconciliation:** when a neighboring tile arrives, its edge heights are compared with the resident tile. Small valid-source differences (up to 20 m) are averaged; a valid sample can fill a no-data edge sample. Larger valid-source jumps are not hidden and produce a console warning.
+- **Shared terrain normals:** where two loaded tile edges align, normals are averaged to reduce visible lighting seams.
+- **No-data masks:** builders preserve which elevation samples came from missing/invalid source data. The renderer does not describe illustrative fallback terrain as measured elevation.
+- **Offline seam checker:** `tools/audit_tile_seams.py` scans built tiles, compares shared elevation edges, writes a JSON report, and fails if a neighboring valid edge differs by more than 5 m.
+- **Schema v2 required:** tile files produced by Stages 1–4 use the old grid/schema. Rebuild them with Stage 5 before using static tiles, otherwise the app rejects the old schema and may try the configured live fallback.
+- **Fallback error fixed:** if elevation requests fail, an explicitly labelled illustrative terrain can be generated instead of calling an undefined helper.
 
-## Run locally
+## Run the viewer locally
 
-1. Extract this ZIP.
-2. Open the extracted project folder in VS Code.
-3. Install the VS Code **Live Server** extension if it is not already installed.
-4. Right-click `index.html` and choose **Open with Live Server**.
-5. Click **ENTER THE WORLD**. The first tile is requested only when you enter.
-6. Click the scene to capture the mouse. Use `W/A/S/D` to move, the mouse to look around, `Shift` to move quickly, `Space/C` to rise or descend in drone mode, and `F` to toggle ground-follow/drone mode. `Esc` releases the mouse.
+1. Extract the project ZIP.
+2. Open the folder in VS Code.
+3. Start the `index.html` with VS Code Live Server.
+4. Click **ENTER THE WORLD**.
+5. Click the scene and use `W/A/S/D` to move, mouse to look, `Shift` to move quickly, `Space/C` to rise/descend in drone mode, `F` to toggle ground-follow/drone, and `Esc` to release the mouse.
 
-Internet access is required for CDN libraries and any live data calls. Browser privacy, CORS, API availability, and public-service rate limits can affect live requests.
+Internet access is needed for Three.js from the CDN and for live fallback requests. For predictable streaming, prebuild and host static grid-v2 tiles.
 
-## Publish to GitHub Pages
+## Prepare real data (recommended pilot first)
 
-This is a static HTML/CSS/JavaScript project and needs no npm build step. Upload the **contents** of this folder to the root of a GitHub repository, keeping `index.html` at the repository root. In **Settings → Pages**, select **Deploy from a branch**, then `main` and `/(root)`.
+1. Use `DOWNLOAD-NATIONAL-DATA.ps1` to download the Bangladesh OSM extract and boundary.
+2. Download Copernicus DEM GeoTIFF files covering the country under the current provider's terms, put them under `data/source/dem_tiles/`, and run `MERGE-DEM-TILES.bat`.
+3. Run `BUILD-PILOT-TILES.bat` to compile a small set of tiles nearest Dhaka. This can take time and requires Python dependencies plus free disk space.
+4. Review the pilot output in `data/pilot-tiles-v2/`. Validate an individual file with `python tools\validate_tile.py data\pilot-tiles-v2\r<row>_c<col>.json` (replace the row/column with a real filename).
+5. Run `AUDIT-TILES.bat data\pilot-tiles-v2` or `python tools\audit_tile_seams.py --tiles data\pilot-tiles-v2 --report data\pilot-tiles-v2\seam-report.json`.
+6. Fix any edge failures before producing a full national dataset.
+7. Only after the pilot passes, run `BUILD-NATIONAL-TILES.bat`. The national output is `data/national-tiles-v2/`; audit it with `AUDIT-TILES.bat` or `python tools\audit_tile_seams.py --tiles data\national-tiles-v2 --report data\national-tiles-v2\seam-report.json`.
 
-For a production-sized country dataset, publish only the app files to GitHub Pages. Host generated world tiles separately (for example on a static object store/CDN) and configure `config.js`:
+Do **not** build the whole country by making a public Overpass request for every tile. The national compiler reads one downloaded PBF and one local DEM mosaic.
+
+## GitHub Pages and hosting
+
+The frontend is a plain static HTML/CSS/JavaScript project and does not require an npm build. Upload the *contents* of this folder to the root of your GitHub repository, keeping `index.html` at the root. Publish from `main / (root)` in Settings → Pages.
+
+For real nationwide streaming, do not put a huge national tile collection in the GitHub source repository. Host tile JSONs on a static object store/CDN with CORS enabled, then set `config.js`:
 
 ```js
 window.BDOW_CONFIG = {
@@ -38,40 +49,27 @@ window.BDOW_CONFIG = {
 };
 ```
 
-The URL must end in `/`, serve files named like `r122_c81.json`, allow CORS from your Pages domain, and return `application/json`. Set `allowLiveFallback: true` only for small tests, not for a whole-country production run.
+The base URL must end with `/`, serve `r<row>_c<col>.json` files, and permit browser requests from the GitHub Pages origin. Use `allowLiveFallback: true` only for small tests; it is not a substitute for a complete hosted national dataset.
 
-## Real dataset pipeline
+## Grid and accuracy limitations
 
-The ZIP still includes Stage 3 tools and docs:
+- Grid v2 uses a fixed-reference equirectangular projection at 23.5° N. It is consistent for adjacent tiles, but it is a local game-world projection—not a legal survey projection. The east-west distance scale varies by a few percent across Bangladesh.
+- A 3 km tile with 33 × 33 samples is broad-resolution terrain (about 94 m sample spacing). It will not show every embankment, drain, road camber or small landform. Add higher-resolution DEM where licensed and available for a real improvement.
+- The 100 m setting controls detailed building geometry radius, not terrain survey resolution or completeness of building data.
+- OSM buildings/roads/railways/waterways vary in coverage. Unknown building heights are estimates. The current compiler processes OSM ways; it is not a complete photogrammetric model of every roof, tree, bridge or interior.
+- Runtime edge blending only repairs small seams between resident tile samples. Discrepancies above 20 m are deliberately not concealed; the offline seam checker should be run before publishing.
+- This remains an open-world visualization prototype, not a finished GTA/Forza-style game: car/character controllers, full collision physics, interiors, verified nationwide photogrammetry and finished day/night gameplay are not included.
 
-- `DOWNLOAD-NATIONAL-DATA.ps1`: gets the Geofabrik Bangladesh OSM extract and country boundary.
-- `MERGE-DEM-TILES.bat`: combines locally downloaded DEM GeoTIFFs.
-- `BUILD-PILOT-TILES.bat`: builds a small pilot around Dhaka.
-- `BUILD-NATIONAL-TILES.bat`: compiles tiles across the country boundary.
-- `tools/validate_tile.py`: validates the structure of a generated tile.
+## Checks run in this package
 
-Read `DATA-PIPELINE.md` and `NATIONAL-DATA-SOURCES.md` before building. Download Copernicus DEM files from the official data source and check the current access terms. The national build can require many gigabytes of disk and may create thousands of tile files. Do not commit the raw PBF, DEM mosaic, working database/cache, or all national tiles to the web-app repository.
+- Python syntax compilation for all tools.
+- `tools/test_streaming_grid.py`: address round-trips plus exact east/west and north/south neighbor boundary coordinates.
+- `tools/test_seam_audit.py`: synthetic 2×2 neighbor tiles pass, and an intentionally damaged 12 m edge is detected.
+- JavaScript module syntax checked with Node.
+- Live browser rendering/data download was **not** tested in this environment; run the viewer in your browser and verify tile/CORS/service behavior.
 
-For a small trial, build one pilot area first and set `config.js` to the folder where those tiles live. Do not build all Bangladesh until the pilot is checked visually.
+## Attribution
 
-## Detail and geographic accuracy limits
-
-- The `100 m` LOD setting controls building shape detail around the camera. It does not mean terrain height is surveyed at 100 m resolution.
-- The default Stage 3 national profile uses a broad-resolution DEM (commonly GLO-90). A 90 m DEM cannot accurately represent every road camber, drain, embankment or small landform. Increasing mesh subdivisions without better source data only interpolates the same elevations.
-- The current engine's world chunks are approximately **3 km × 3 km**; it is the data streamed in those chunks that is shown at different detail levels.
-- Distant road geometry is simplified to major road classes; nearby/current tiles can show more local roads. Building data is limited to OpenStreetMap coverage, and unknown building heights remain estimates.
-- This stage does **not** yet include a driving vehicle, character animation, collision physics, walkable interiors, complete tree cover, photogrammetric roofs, or verified 3D survey coverage for every part of Bangladesh.
-- A tile can still pop in if the required data is not hosted or if a live service is slow. Smooth nationwide streaming depends on a generated and hosted tile dataset, not code alone.
-
-## Validation performed
-
-- JavaScript module syntax checked with Node.js.
-- Python tool source compiled with `py_compile`.
-- Tile-grid formula checked against the national tile builder.
-- A live browser render was **not** verified in this environment; CDN/data requests and browser-network policy can prevent a full live test. Test the GitHub Pages build in a normal browser before treating it as released.
-
-## Data attribution
-
-- OpenStreetMap data: **© OpenStreetMap contributors**, ODbL — https://www.openstreetmap.org/copyright
-- Copernicus DEM: review the exact collection/access terms — https://dataspace.copernicus.eu/explore-data/data-collections/copernicus-contributing-missions/collections-description/COP-DEM
+- OpenStreetMap: © OpenStreetMap contributors, ODbL — https://www.openstreetmap.org/copyright
+- Copernicus DEM: review the collection and attribution terms — https://dataspace.copernicus.eu/explore-data/data-collections/copernicus-contributing-missions/collections-description/COP-DEM
 - Three.js: MIT — https://github.com/mrdoob/three.js

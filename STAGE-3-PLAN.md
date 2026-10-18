@@ -1,3 +1,5 @@
+> Historical Stage 3 notes. The current coordinate system and build pipeline were revised in Stage 5; use `README.md` and `DATA-PIPELINE.md` for current instructions.
+
 # Stage 3 — Nationwide offline dataset build
 
 Stage 2 introduces a fixed geographic tile grid and a local static tile format. The supplied `tools/build_tile.py` creates a single pilot tile from live public services so that static hosting can serve it repeatedly without requesting terrain/OSM data on each visit.

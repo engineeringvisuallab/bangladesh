@@ -1,7 +1,7 @@
 @echo off
 setlocal
 cd /d "%~dp0"
-echo Bangladesh Open World - Build one static tile around Dhaka
+echo Bangladesh Open World - Build one Stage 5 grid-v2 static tile around Dhaka
 echo.
 python --version >nul 2>&1
 if errorlevel 1 (
@@ -16,8 +16,11 @@ if errorlevel 1 (
   echo Tile build failed. Check the internet connection and try again later.
 ) else (
   echo.
-  echo Tile build finished. The new JSON is inside data\tiles\.
-  echo Commit and push that file to GitHub to let the site use the static tile.
+  echo Tile build finished. Validating the new grid-v2 JSON...
+  for %%F in (data\tiles\r*_c*.json) do python tools\validate_tile.py "%%F"
+  if errorlevel 1 echo WARNING: tile validation failed; do not publish this tile.
+  echo.
+  echo The new JSON is inside data\tiles\. Neighbor seams require at least two adjacent tiles and AUDIT-TILES.bat.
 )
 echo.
 pause

@@ -1,0 +1,13 @@
+# Large source datasets and build artifacts must not be committed to the web-app repository.
+data/source/
+data/national-build/
+data/national-tiles/
+*.osm.pbf
+*.nodecache
+*.tif
+*.tiff
+*.aux.xml
+
+# Python tool outputs
+__pycache__/
+*.py[cod]

@@ -132,7 +132,8 @@ def fetch_osm(origin: dict) -> tuple[dict, str]:
     query = (
         f"[out:json][timeout:30][maxsize:67108864];"
         f'way["highway"]({bbox});out geom 3500;'
-        f'way["waterway"~"river|canal|stream|drain|ditch"]({bbox});out geom 500;'
+        f'way["railway"~"rail|light_rail|subway|narrow_gauge|tram|monorail"]({bbox});out geom 600;'
+        f'way["waterway"~"river|canal|stream|drain|ditch|tidal_channel"]({bbox});out geom 500;'
         f'way["natural"="water"]({bbox});out geom 250;'
         f'way["building"]({bbox});out geom 4000;'
     )

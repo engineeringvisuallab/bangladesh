@@ -4,6 +4,9 @@ import { Sky } from 'three/addons/objects/Sky.js';
 const $ = (id) => document.getElementById(id);
 const TILE_SIZE = 3000; // metres across; one streamed world tile
 const GRID_SEGMENTS = 32; // ~94 m spacing for the broad-resolution GLO-90 DEM
+const NEAR_DETAIL_RADIUS_M = 100; // full building geometry inside this camera distance
+const TILE_DEMOTE_DISTANCE_M = 3600;
+const MAX_RESIDENT_TILES = 17; // keeps a moving 3D world within a bounded memory budget
 const TILE_GRID_LAT_ORIGIN = 20.5;
 const TILE_GRID_LON_ORIGIN = 88.0;
 const DEFAULT_LOCATION = { name: 'Dhaka', lat: 23.8103, lon: 90.4125 };
@@ -70,9 +73,18 @@ scene.add(sky);
 const worldGroup = new THREE.Group();
 scene.add(worldGroup);
 let origin = { lat: DEFAULT_LOCATION.lat, lon: DEFAULT_LOCATION.lon };
-let activeTile = null;
-let tileLoading = false;
+let activeTile = null; // terrain payload for the tile currently under the player
+let activeTileKey = null;
+let tileLoading = false; // only used for the first-load/travel overlay; movement is not blocked by background streaming
 let hasEntered = false;
+let worldReady = false;
+const residentTiles = new Map();
+const tileLoadPromises = new Map();
+const tileRetryAfter = new Map();
+let lastStreamCheck = 0;
+let lastPrefetchKey = null;
+let lastStreamErrorKey = null;
+let lookAheadTileKey = null;
 let isGroundMode = false;
 let panelOpen = true;
 let pointerLocked = false;
@@ -80,7 +92,6 @@ let yaw = 0;
 let pitch = -0.12;
 let terrainReal = false;
 let osmReal = false;
-let lastRebaseAt = 0;
 let lastToastAt = 0;
 const keys = new Set();
 const clock = new THREE.Clock();
@@ -93,6 +104,8 @@ const mats = {
   lane: new THREE.MeshStandardMaterial({ color: 0xf0d5a0, roughness: 0.8, side: THREE.DoubleSide }),
   water: new THREE.MeshStandardMaterial({ color: 0x287f9a, roughness: 0.32, metalness: 0.05, side: THREE.DoubleSide, transparent: true, opacity: 0.94 }),
   waterArea: new THREE.MeshStandardMaterial({ color: 0x2d8094, roughness: 0.25, metalness: 0.06, side: THREE.DoubleSide, transparent: true, opacity: 0.94 }),
+  railBed: new THREE.MeshStandardMaterial({ color: 0x373b3b, roughness: 1, side: THREE.DoubleSide }),
+  rail: new THREE.MeshStandardMaterial({ color: 0x9a9fa0, roughness: 0.36, metalness: 0.58, side: THREE.DoubleSide }),
   building: new THREE.MeshStandardMaterial({ color: 0x9b9b87, roughness: 0.91, metalness: 0.01 }),
   buildingWarm: new THREE.MeshStandardMaterial({ color: 0xb39b7d, roughness: 0.92, metalness: 0.01 }),
   buildingRoof: new THREE.MeshStandardMaterial({ color: 0x7b776a, roughness: 0.93, side: THREE.DoubleSide }),
@@ -119,21 +132,28 @@ function centerWorldCoords(lat, lon, around = origin) {
 }
 // Fixed geographic grid: the same coordinates always resolve to the same static tile file.
 // Each row's longitude spacing is adjusted for its latitude so tiles remain approximately 3 km wide.
+function tileAddressAtGrid(row, col) {
+  const latStep = TILE_SIZE / 111320;
+  const centerLat = TILE_GRID_LAT_ORIGIN + (row + 0.5) * latStep;
+  const lonStep = TILE_SIZE / (111320 * Math.cos(THREE.MathUtils.degToRad(centerLat)));
+  const centerLon = TILE_GRID_LON_ORIGIN + (col + 0.5) * lonStep;
+  return { row, col, key: `r${row}_c${col}`, origin: { lat: centerLat, lon: centerLon } };
+}
 function tileAddressFor(lat, lon) {
   const latStep = TILE_SIZE / 111320;
   const row = Math.floor((lat - TILE_GRID_LAT_ORIGIN) / latStep);
   const centerLat = TILE_GRID_LAT_ORIGIN + (row + 0.5) * latStep;
   const lonStep = TILE_SIZE / (111320 * Math.cos(THREE.MathUtils.degToRad(centerLat)));
   const col = Math.floor((lon - TILE_GRID_LON_ORIGIN) / lonStep);
-  const centerLon = TILE_GRID_LON_ORIGIN + (col + 0.5) * lonStep;
-  return { row, col, key: `r${row}_c${col}`, origin: { lat: centerLat, lon: centerLon } };
+  return tileAddressAtGrid(row, col);
 }
-function currentLatLon() {
+function latLonAtWorld(x, z) {
   return {
-    lat: origin.lat - camera.position.z / 111320,
-    lon: origin.lon + camera.position.x / (111320 * Math.cos(THREE.MathUtils.degToRad(origin.lat))),
+    lat: origin.lat - z / 111320,
+    lon: origin.lon + x / (111320 * Math.cos(THREE.MathUtils.degToRad(origin.lat))),
   };
 }
+function currentLatLon() { return latLonAtWorld(camera.position.x, camera.position.z); }
 function formatCoord(value, positive, negative) {
   return `${Math.abs(value).toFixed(5)}° ${value >= 0 ? positive : negative}`;
 }
@@ -184,7 +204,12 @@ function fallbackHeight(lat, lon) {
 async function fetchPrebuiltTile(address) {
   // Static tiles are served from the repository first. A missing file means this tile has not
   // been built yet, in which case the prototype may fall back to the live public endpoints.
-  const url = new URL(`../data/tiles/${address.key}.json`, import.meta.url);
+  const configuredBase = window.BDOW_CONFIG?.tileBaseUrl;
+  const basePath = configuredBase ? `${String(configuredBase).trim().replace(/\/+$/, '')}/` : null;
+  const baseUrl = basePath
+    ? new URL(basePath, document.baseURI)
+    : new URL('../data/tiles/', import.meta.url);
+  const url = new URL(`${address.key}.json`, baseUrl);
   const response = await fetch(url, { cache: 'force-cache' });
   if (response.status === 404) return null;
   if (!response.ok) throw new Error(`Prebuilt tile request returned HTTP ${response.status}`);
@@ -261,7 +286,7 @@ async function fetchOSM(originPoint) {
   const bbox = `${south.toFixed(6)},${west.toFixed(6)},${north.toFixed(6)},${east.toFixed(6)}`;
   // Per-feature output caps prevent one dense urban tile from exhausting the browser/public API.
   // A capped tile can omit mapped objects; the national product will use preprocessed vector tiles instead.
-  const query = `[out:json][timeout:24][maxsize:67108864];way["highway"](${bbox});out geom 3500;way["waterway"~"river|canal|stream|drain|ditch"](${bbox});out geom 500;way["natural"="water"](${bbox});out geom 250;way["building"](${bbox});out geom 4000;`;
+  const query = `[out:json][timeout:24][maxsize:67108864];way["highway"](${bbox});out geom 3500;way["railway"~"rail|light_rail|subway|narrow_gauge|tram|monorail"](${bbox});out geom 600;way["waterway"~"river|canal|stream|drain|ditch|tidal_channel"](${bbox});out geom 500;way["natural"="water"](${bbox});out geom 250;way["building"](${bbox});out geom 4000;`;
   const endpoints = ['https://overpass-api.de/api/interpreter', 'https://overpass.kumi.systems/api/interpreter'];
   let lastError;
   for (const endpoint of endpoints) {
@@ -427,36 +452,88 @@ function closedRing(coords) {
   const first = coords[0], last = coords[coords.length - 1];
   return Math.abs(first.lat - last.lat) < 0.00001 && Math.abs(first.lon - last.lon) < 0.00001;
 }
+function clipPolygonToTile(points) {
+  const half = TILE_SIZE / 2;
+  const clipEdges = [
+    { inside: p => p.x >= -half, cross: (a, b) => { const t = (-half - a.x) / (b.x - a.x); return { x: -half, z: a.z + t * (b.z - a.z) }; } },
+    { inside: p => p.x <= half, cross: (a, b) => { const t = (half - a.x) / (b.x - a.x); return { x: half, z: a.z + t * (b.z - a.z) }; } },
+    { inside: p => p.z >= -half, cross: (a, b) => { const t = (-half - a.z) / (b.z - a.z); return { x: a.x + t * (b.x - a.x), z: -half }; } },
+    { inside: p => p.z <= half, cross: (a, b) => { const t = (half - a.z) / (b.z - a.z); return { x: a.x + t * (b.x - a.x), z: half }; } },
+  ];
+  let output = points.slice();
+  for (const edge of clipEdges) {
+    const input = output;
+    output = [];
+    if (!input.length) break;
+    let previous = input[input.length - 1];
+    for (const current of input) {
+      const prevIn = edge.inside(previous), currIn = edge.inside(current);
+      if (currIn) {
+        if (!prevIn) {
+          const dx = current.x - previous.x, dz = current.z - previous.z;
+          const denominator = (Math.abs(dx) > 1e-9 && (edge === clipEdges[0] || edge === clipEdges[1])) ? dx : dz;
+          if (Math.abs(denominator) > 1e-9) output.push(edge.cross(previous, current));
+        }
+        output.push(current);
+      } else if (prevIn) {
+        const dx = current.x - previous.x, dz = current.z - previous.z;
+        const denominator = (Math.abs(dx) > 1e-9 && (edge === clipEdges[0] || edge === clipEdges[1])) ? dx : dz;
+        if (Math.abs(denominator) > 1e-9) output.push(edge.cross(previous, current));
+      }
+      previous = current;
+    }
+  }
+  return output;
+}
+
 function createWaterArea(element, tile) {
   if (!Array.isArray(element.geometry) || element.geometry.length < 4) return null;
   const source = element.geometry;
   const first = source[0], last = source[source.length - 1];
   if (Math.abs(first.lat - last.lat) > 0.00001 || Math.abs(first.lon - last.lon) > 0.00001) return null;
-  const points = source.map((p) => centerWorldCoords(p.lat, p.lon, tile.origin));
-  if (points.some((p) => Math.abs(p.x) > TILE_SIZE * .52 || Math.abs(p.z) > TILE_SIZE * .52)) return null;
+  const unclosed = source.slice(0, -1).map((p) => centerWorldCoords(p.lat, p.lon, tile.origin));
+  const points = clipPolygonToTile(unclosed);
+  if (points.length < 3) return null;
   const shape = new THREE.Shape();
   shape.moveTo(points[0].x, -points[0].z);
-  for (let i = 1; i < points.length - 1; i++) shape.lineTo(points[i].x, -points[i].z);
+  for (let i = 1; i < points.length; i++) shape.lineTo(points[i].x, -points[i].z);
   shape.closePath();
   const geometry = new THREE.ShapeGeometry(shape, 1);
   geometry.rotateX(-Math.PI / 2);
-  let averageLat = 0, averageLon = 0;
-  source.forEach((p) => { averageLat += p.lat; averageLon += p.lon; });
-  averageLat /= source.length; averageLon /= source.length;
+  let x = 0, z = 0;
+  points.forEach((p) => { x += p.x; z += p.z; });
+  x /= points.length; z /= points.length;
   geometry.computeVertexNormals();
   const mesh = new THREE.Mesh(geometry, mats.waterArea);
-  mesh.position.y = heightForGeo(tile, averageLat, averageLon) + 0.25;
+  mesh.position.y = heightSampler(tile, x, z) + 0.25;
   mesh.receiveShadow = true;
+  mesh.userData.osmId = element.id;
+  mesh.name = 'OSM_WATER_AREA';
   return mesh;
+}
+
+function offsetPolyline(path, offset) {
+  return path.map((point, index) => {
+    const previous = path[Math.max(0, index - 1)];
+    const next = path[Math.min(path.length - 1, index + 1)];
+    const dx = next.x - previous.x, dz = next.z - previous.z;
+    const length = Math.hypot(dx, dz) || 1;
+    return { x: point.x + (dz / length) * offset, z: point.z - (dx / length) * offset };
+  });
 }
 
 function createBuilding(element, tile) {
   const coords = element.geometry;
   if (!Array.isArray(coords) || coords.length < 4 || !closedRing(coords)) return null;
-  const local = coords.map((p) => centerWorldCoords(p.lat, p.lon, tile.origin));
-  if (local.some((p) => Math.abs(p.x) > TILE_SIZE * .53 || Math.abs(p.z) > TILE_SIZE * .53)) return null;
+  // Clip footprints that cross a 3 km tile edge so they remain visible in both tiles.
+  const source = coords.slice(0, -1).map((p) => centerWorldCoords(p.lat, p.lon, tile.origin));
+  const local = clipPolygonToTile(source);
+  if (local.length < 3) return null;
   let twiceArea = 0;
-  for (let i = 0; i < local.length - 1; i++) twiceArea += local[i].x * local[i + 1].z - local[i + 1].x * local[i].z;
+  for (let i = 0; i < local.length; i++) {
+    const a = local[i], b = local[(i + 1) % local.length];
+    twiceArea += a.x * b.z - b.x * a.z;
+  }
   const area = Math.abs(twiceArea / 2);
   if (area < 8 || area > 45000) return null;
   const tags = element.tags || {};
@@ -467,36 +544,91 @@ function createBuilding(element, tile) {
   if (Number.isFinite(explicitHeight) && explicitHeight >= 2 && explicitHeight <= 300) height = explicitHeight;
   else if (Number.isFinite(levels) && levels > 0 && levels <= 100) height = levels * 3.2;
   else { estimated = true; height = area > 2500 ? 13 : area > 800 ? 9 : area > 200 ? 6.5 : 4.2; }
+
+  const xs = local.map((point) => point.x), zs = local.map((point) => point.z);
+  const centerX = (Math.min(...xs) + Math.max(...xs)) / 2;
+  const centerZ = (Math.min(...zs) + Math.max(...zs)) / 2;
+  const width = Math.max(2, Math.max(...xs) - Math.min(...xs));
+  const depth = Math.max(2, Math.max(...zs) - Math.min(...zs));
   const shape = new THREE.Shape();
   shape.moveTo(local[0].x, -local[0].z);
-  for (let i = 1; i < local.length - 1; i++) shape.lineTo(local[i].x, -local[i].z);
+  for (let i = 1; i < local.length; i++) shape.lineTo(local[i].x, -local[i].z);
   shape.closePath();
-  const geometry = new THREE.ExtrudeGeometry(shape, { depth: height, bevelEnabled: false, curveSegments: 1 });
-  geometry.rotateX(-Math.PI / 2);
-  geometry.computeVertexNormals();
-  const centerLat = coords.reduce((sum, p) => sum + p.lat, 0) / coords.length;
-  const centerLon = coords.reduce((sum, p) => sum + p.lon, 0) / coords.length;
-  const mesh = new THREE.Mesh(geometry, /industrial|warehouse|commercial|retail/.test(tags.building || '') ? mats.buildingWarm : mats.building);
-  mesh.position.y = heightForGeo(tile, centerLat, centerLon) + 0.15;
-  mesh.castShadow = true;
-  mesh.receiveShadow = true;
-  mesh.userData.heightEstimated = estimated;
-  mesh.userData.osmId = element.id;
-  mesh.name = estimated ? 'OSM_BUILDING_ESTIMATED_HEIGHT' : 'OSM_BUILDING_REPORTED_HEIGHT';
-  return mesh;
+  const nearGeometry = new THREE.ExtrudeGeometry(shape, { depth: height, bevelEnabled: false, curveSegments: 1 });
+  nearGeometry.rotateX(-Math.PI / 2);
+  // Recenter the real footprint so THREE.LOD's distance is measured from the building, not tile origin.
+  nearGeometry.translate(-centerX, 0, -centerZ);
+  nearGeometry.computeVertexNormals();
+
+  const material = /industrial|warehouse|commercial|retail/.test(tags.building || '') ? mats.buildingWarm : mats.building;
+  const baseHeight = heightSampler(tile, centerX, centerZ) + 0.15;
+  const lod = new THREE.LOD();
+  lod.position.set(centerX, baseHeight, centerZ);
+  const detailed = new THREE.Mesh(nearGeometry, material);
+  detailed.castShadow = true;
+  detailed.receiveShadow = true;
+  detailed.name = estimated ? 'OSM_BUILDING_REPORTED_FOOTPRINT_ESTIMATED_HEIGHT' : 'OSM_BUILDING_REPORTED_HEIGHT';
+  const simplified = new THREE.Mesh(new THREE.BoxGeometry(width, height, depth), material);
+  simplified.position.y = height / 2;
+  simplified.castShadow = false;
+  simplified.receiveShadow = true;
+  simplified.name = 'OSM_BUILDING_FAR_LOD_BLOCK';
+  lod.addLevel(detailed, 0);
+  lod.addLevel(simplified, NEAR_DETAIL_RADIUS_M);
+  lod.userData.heightEstimated = estimated;
+  lod.userData.osmId = element.id;
+  lod.userData.nearDetailRadius = NEAR_DETAIL_RADIUS_M;
+  lod.name = estimated ? 'OSM_BUILDING_LOD_ESTIMATED_HEIGHT' : 'OSM_BUILDING_LOD_REPORTED_HEIGHT';
+  return lod;
 }
 
-function createOSMGeometry(tile, osm) {
+
+function createFarBuildingBlockGeometry(element, tile) {
+  const coords = element.geometry;
+  if (!Array.isArray(coords) || coords.length < 4 || !closedRing(coords)) return null;
+  const source = coords.slice(0, -1).map((p) => centerWorldCoords(p.lat, p.lon, tile.origin));
+  const local = clipPolygonToTile(source);
+  if (local.length < 3) return null;
+  let twiceArea = 0;
+  for (let i = 0; i < local.length; i++) {
+    const a = local[i], b = local[(i + 1) % local.length];
+    twiceArea += a.x * b.z - b.x * a.z;
+  }
+  const area = Math.abs(twiceArea / 2);
+  if (area < 8 || area > 45000) return null;
+  const xs = local.map((point) => point.x), zs = local.map((point) => point.z);
+  const centerX = (Math.min(...xs) + Math.max(...xs)) / 2;
+  const centerZ = (Math.min(...zs) + Math.max(...zs)) / 2;
+  const width = Math.max(2, Math.max(...xs) - Math.min(...xs));
+  const depth = Math.max(2, Math.max(...zs) - Math.min(...zs));
+  const tags = element.tags || {};
+  const explicitHeight = Number.parseFloat(String(tags.height || '').replace(/[^0-9.\-]/g, ''));
+  const levels = Number.parseFloat(tags['building:levels']);
+  const height = Number.isFinite(explicitHeight) && explicitHeight >= 2 && explicitHeight <= 300
+    ? explicitHeight
+    : Number.isFinite(levels) && levels > 0 && levels <= 100
+      ? levels * 3.2
+      : area > 2500 ? 13 : area > 800 ? 9 : area > 200 ? 6.5 : 4.2;
+  const geometry = new THREE.BoxGeometry(width, height, depth);
+  geometry.translate(centerX, heightSampler(tile, centerX, centerZ) + height / 2 + 0.12, centerZ);
+  return geometry;
+}
+
+function createOSMGeometry(tile, osm, quality = 'near') {
   const group = new THREE.Group();
   const elements = osm?.elements || [];
-  let roads = 0, waterways = 0, buildings = 0, waterAreas = 0;
-  const MAX_ROAD_WAYS = 3500, MAX_WATERWAYS = 500, MAX_WATER_AREAS = 250, MAX_BUILDINGS = 4000;
-  const buckets = { roadBase: [], motorway: [], majorRoad: [], localRoad: [], water: [] };
+  const farMode = quality === 'far';
+  let roads = 0, waterways = 0, railways = 0, buildings = 0, waterAreas = 0;
+  const MAX_ROAD_WAYS = 3500, MAX_WATERWAYS = 500, MAX_RAILWAYS = 600, MAX_WATER_AREAS = 250, MAX_BUILDINGS = 4000;
+  const buckets = { roadBase: [], motorway: [], majorRoad: [], localRoad: [], water: [], railBed: [], rail: [] };
+  const farBuildingGeometries = [];
   for (const element of elements) {
     if (element.type !== 'way' || !Array.isArray(element.geometry)) continue;
     const tags = element.tags || {};
     if (tags.highway) {
-      if (roads >= MAX_ROAD_WAYS) continue;
+      const majorRoad = ['motorway', 'motorway_link', 'trunk', 'trunk_link', 'primary', 'primary_link'].includes(tags.highway);
+      if (farMode && !majorRoad) continue;
+      if (roads >= (farMode ? 500 : MAX_ROAD_WAYS)) continue;
       const points = wayCoords(element, tile);
       const paths = clipPolylineToTile(points);
       if (!paths.length) continue;
@@ -510,6 +642,21 @@ function createOSMGeometry(tile, osm) {
         if (surface) { buckets[materialKey].push(surface); drewRoad = true; }
       }
       if (drewRoad) roads++;
+      continue;
+    }
+    if (tags.railway && ['rail', 'light_rail', 'subway', 'narrow_gauge', 'tram', 'monorail'].includes(tags.railway)) {
+      if (railways >= MAX_RAILWAYS) continue;
+      const paths = clipPolylineToTile(wayCoords(element, tile));
+      let drewRail = false;
+      for (const path of paths) {
+        const bed = ribbonGeometry(path, 3.8, (x, z) => heightSampler(tile, x, z), 0.12);
+        const leftRail = ribbonGeometry(offsetPolyline(path, 0.72), 0.14, (x, z) => heightSampler(tile, x, z), 0.25);
+        const rightRail = ribbonGeometry(offsetPolyline(path, -0.72), 0.14, (x, z) => heightSampler(tile, x, z), 0.25);
+        if (bed) { buckets.railBed.push(bed); drewRail = true; }
+        if (leftRail) { buckets.rail.push(leftRail); drewRail = true; }
+        if (rightRail) { buckets.rail.push(rightRail); drewRail = true; }
+      }
+      if (drewRail) railways++;
       continue;
     }
     if (tags.waterway) {
@@ -531,8 +678,13 @@ function createOSMGeometry(tile, osm) {
     }
     if (tags.building) {
       if (buildings >= MAX_BUILDINGS) continue;
-      const mesh = createBuilding(element, tile);
-      if (mesh) { group.add(mesh); buildings++; }
+      if (farMode) {
+        const geometry = createFarBuildingBlockGeometry(element, tile);
+        if (geometry) { farBuildingGeometries.push(geometry); buildings++; }
+      } else {
+        const mesh = createBuilding(element, tile);
+        if (mesh) { group.add(mesh); buildings++; }
+      }
     }
   }
   for (const [key, geometries] of Object.entries(buckets)) {
@@ -556,7 +708,27 @@ function createOSMGeometry(tile, osm) {
     mesh.name = `OSM_${key.toUpperCase()}_MESH`;
     group.add(mesh);
   }
-  return { group, roads, waterways, buildings, waterAreas };
+  if (farBuildingGeometries.length) {
+    const mergedPositions = [], mergedIndices = [];
+    for (const geometry of farBuildingGeometries) {
+      const pos = geometry.getAttribute('position').array;
+      const offset = mergedPositions.length / 3;
+      for (let i = 0; i < pos.length; i++) mergedPositions.push(pos[i]);
+      const idx = geometry.getIndex()?.array;
+      if (idx) for (let i = 0; i < idx.length; i++) mergedIndices.push(idx[i] + offset);
+      geometry.dispose();
+    }
+    const combined = new THREE.BufferGeometry();
+    combined.setAttribute('position', new THREE.Float32BufferAttribute(mergedPositions, 3));
+    combined.setIndex(mergedIndices);
+    combined.computeVertexNormals();
+    const mesh = new THREE.Mesh(combined, mats.building);
+    mesh.receiveShadow = true;
+    mesh.castShadow = false;
+    mesh.name = 'OSM_BUILDINGS_MERGED_FAR_LOD';
+    group.add(mesh);
+  }
+  return { group, roads, waterways, railways, buildings, waterAreas };
 }
 
 function disposeGroup(group) {
@@ -566,135 +738,341 @@ function disposeGroup(group) {
       if (Array.isArray(object.material)) object.material.forEach((material) => material.dispose());
       else object.material.dispose();
     }
-    // Shared OSM materials and the shared terrain texture intentionally remain alive.
+    // Shared OSM materials and shared terrain texture intentionally remain alive.
   });
 }
 
-async function loadWorldTile(lat, lon, reason = 'travel', keepCamera = false) {
-  if (tileLoading) return;
-  tileLoading = true;
-  setLoadingVeil(true, reason === 'initial' ? 'Building the first world tile' : 'Streaming next world tile', 'Checking local prebuilt data before requesting live map services…');
-  setWorldState('LOADING WORLD DATA');
-  $('enterButton').disabled = true;
-  const savedYaw = yaw, savedPitch = pitch;
-  let savedAltitudeAboveGround = 180;
-  if (activeTile) savedAltitudeAboveGround = camera.position.y - heightSampler(activeTile, camera.position.x, camera.position.z);
-  const address = tileAddressFor(lat, lon);
-  const tileOrigin = address.origin;
-  const targetLocal = centerWorldCoords(lat, lon, tileOrigin);
-  let elevationData;
-  let osmData = { elements: [] };
-  let osmError = null;
-  let dataMode = 'live API';
-
-  try {
-    let prebuilt = null;
-    try {
-      prebuilt = await fetchPrebuiltTile(address);
-    } catch (error) {
-      console.warn('Prebuilt tile could not be used; trying the live-data fallback.', error);
-      toast(`Local tile ${address.key} could not be read; trying live data.`);
-    }
-
-    if (prebuilt) {
-      elevationData = {
-        segments: prebuilt.terrain.segments,
-        points: [],
-        heights: prebuilt.terrain.heights,
-        source: prebuilt.terrain.source || 'prebuilt Copernicus DEM tile',
-      };
-      osmData = prebuilt.osm;
-      terrainReal = !/(fallback|not included|placeholder|not real)/i.test(String(elevationData.source));
-      osmReal = !/not included/i.test(String(prebuilt.osm.source || '')); 
-      dataMode = 'prebuilt static tile';
-      $('veilDetail').textContent = `Using local tile ${address.key}…`;
-    } else {
-      const results = await Promise.allSettled([fetchTerrain(tileOrigin), fetchOSM(tileOrigin)]);
-      if (results[0].status === 'fulfilled') {
-        elevationData = results[0].value;
-        terrainReal = elevationData.source !== 'fallback';
-      } else {
-        terrainReal = false;
-        elevationData = makeFallbackTerrain(tileOrigin);
-        toast('DEM service unavailable; using clearly marked temporary terrain fallback.');
-      }
-      if (results[1].status === 'fulfilled') { osmData = results[1].value; osmReal = true; }
-      else { osmError = results[1].reason; osmReal = false; }
-    }
-  } catch (error) {
-    $('loadingMessage').textContent = `World data error: ${error.message}`;
-    throw error;
+function positionResidentTile(record) {
+  const offset = centerWorldCoords(record.tile.origin.lat, record.tile.origin.lon, origin);
+  record.group.position.set(offset.x, 0, offset.z);
+}
+function repositionResidentTiles() {
+  for (const record of residentTiles.values()) positionResidentTile(record);
+}
+function tileLocalXZ(record, worldX = camera.position.x, worldZ = camera.position.z) {
+  return { x: worldX - record.group.position.x, z: worldZ - record.group.position.z };
+}
+function recordForAddress(address) { return residentTiles.get(address.key) || null; }
+function currentTileRecord() {
+  const pos = currentLatLon();
+  const address = tileAddressFor(pos.lat, pos.lon);
+  return residentTiles.get(address.key) || activeTileKey && residentTiles.get(activeTileKey) || null;
+}
+function groundHeightAtCamera() {
+  const record = currentTileRecord();
+  if (!record) return 0;
+  const local = tileLocalXZ(record);
+  return heightSampler(record.tile, local.x, local.z);
+}
+function rebuildTileVisuals(record, quality) {
+  for (const child of record.group.children.slice()) {
+    record.group.remove(child);
+    disposeGroup(child);
   }
-
-  const tile = { key: address.key, origin: tileOrigin, ...elevationData };
-  const newGroup = new THREE.Group();
-  newGroup.name = `WORLD_TILE_${address.key}`;
-  newGroup.add(createTerrain(tile));
-  const osmBuilt = createOSMGeometry(tile, osmData);
-  newGroup.add(osmBuilt.group);
-  const previous = worldGroup.children.slice();
-  for (const child of previous) { worldGroup.remove(child); disposeGroup(child); }
-  worldGroup.add(newGroup);
-  activeTile = tile;
-  origin = tileOrigin;
-
-  if (!keepCamera) {
-    if (reason === 'rebase') {
-      const groundAtPlayer = heightSampler(tile, targetLocal.x, targetLocal.z);
-      camera.position.set(targetLocal.x, groundAtPlayer + savedAltitudeAboveGround, targetLocal.z);
-      yaw = savedYaw; pitch = savedPitch;
-    } else {
-      const startZ = targetLocal.z + (reason === 'initial' ? 720 : 600);
-      const startX = targetLocal.x;
-      const startGround = heightSampler(tile, startX, startZ);
-      camera.position.set(startX, startGround + (reason === 'initial' ? 185 : 230), startZ);
-      yaw = 0;
-      pitch = reason === 'initial' ? -0.18 : -0.22;
-    }
-    camera.rotation.set(pitch, yaw, 0);
-  }
-  setStatus('terrainState', terrainReal ? `${elevationData.source}` : `UNVERIFIED: ${elevationData.source || 'DEM unavailable'}`);
-  setStatus('featureState', osmReal ? `${osmBuilt.roads} road ways · ${osmBuilt.waterways} waterways · ${osmBuilt.waterAreas} water areas · ${dataMode}` : (osmError ? 'OSM request failed · try reloading tile' : 'OSM geometry not included in this tile'));
-  setStatus('buildingState', osmReal ? `${osmBuilt.buildings} 3D building footprints` : 'No building geometry included');
-  setStatus('tileState', `${address.key} · 3 × 3 km · ${dataMode}`);
-  setWorldState('WORLD ONLINE');
-  $('enterButton').disabled = false;
-  $('loadingMessage').textContent = osmError ? `Terrain loaded; mapped geometry unavailable: ${osmError.message}` : `World tile ${address.key} loaded. Click the scene and use WASD to explore.`;
-  setLoadingVeil(false);
-  tileLoading = false;
-  updateHUD();
-  if (osmError) toast('Terrain loaded, but OSM geometry could not be fetched.');
-  else toast(`${address.key} ready · ${osmBuilt.roads} roads · ${osmBuilt.buildings} buildings`);
+  record.group.add(createTerrain(record.tile));
+  record.stats = createOSMGeometry(record.tile, record.osmData, quality);
+  record.group.add(record.stats.group);
+  record.quality = quality;
+  positionResidentTile(record);
+}
+function updateActiveTileStatus(record) {
+  if (!record) return;
+  activeTile = record.tile;
+  activeTileKey = record.key;
+  const mode = record.dataMode || 'unknown source';
+  setStatus('terrainState', record.terrainReal ? `${record.terrainSource}` : `UNVERIFIED: ${record.terrainSource || 'DEM unavailable'}`);
+  setStatus('featureState', record.osmReal
+    ? `${record.stats.roads} roads · ${record.stats.railways} railways · ${record.stats.waterways} waterways · ${record.stats.waterAreas} water areas · ${mode}`
+    : (record.osmError ? 'OSM request failed · trying again when needed' : 'No mapped geometry in this tile'));
+  setStatus('buildingState', record.osmReal ? `${record.stats.buildings} 3D building footprints · ${NEAR_DETAIL_RADIUS_M} m full-detail radius` : 'No building geometry included');
+  const local = tileLocalXZ(record);
+  setStatus('tileState', `${record.key} · ${residentTiles.size} tiles resident · ${record.quality.toUpperCase()} LOD`);
 }
 
-function makeFallbackTerrain(tileOrigin) {
-  const segments = GRID_SEGMENTS;
-  const points = [];
-  const heights = [];
-  for (let j = 0; j <= segments; j++) {
-    for (let i = 0; i <= segments; i++) {
-      const x = (i / segments - 0.5) * TILE_SIZE;
-      const z = (j / segments - 0.5) * TILE_SIZE;
-      const lat = tileOrigin.lat - z / 111320;
-      const lon = tileOrigin.lon + x / (111320 * Math.cos(THREE.MathUtils.degToRad(tileOrigin.lat)));
-      points.push({ i, j, x, z, lat, lon });
-      heights.push(fallbackHeight(lat, lon));
+function distanceToRecord(record) {
+  const dx = camera.position.x - record.group.position.x;
+  const dz = camera.position.z - record.group.position.z;
+  return Math.hypot(dx, dz);
+}
+function evictDistantTiles() {
+  if (residentTiles.size <= MAX_RESIDENT_TILES) return;
+  const candidates = [...residentTiles.values()]
+    .filter((record) => record.key !== activeTileKey)
+    .sort((a, b) => distanceToRecord(b) - distanceToRecord(a));
+  while (residentTiles.size > MAX_RESIDENT_TILES && candidates.length) {
+    const record = candidates.shift();
+    residentTiles.delete(record.key);
+    worldGroup.remove(record.group);
+    disposeGroup(record.group);
+    if (record.key === activeTileKey) activeTile = null;
+  }
+}
+
+async function loadTileRecord(address, { allowLive = true, quality = 'near' } = {}) {
+  const resident = residentTiles.get(address.key);
+  if (resident) {
+    resident.lastUsed = performance.now();
+    if (quality === 'near' && resident.quality !== 'near') rebuildTileVisuals(resident, 'near');
+    else if (quality === 'far' && resident.quality !== 'far' && resident.key !== activeTileKey) rebuildTileVisuals(resident, 'far');
+    return resident;
+  }
+  if (tileLoadPromises.has(address.key)) {
+    const pending = await tileLoadPromises.get(address.key);
+    if (pending && quality === 'near' && pending.quality !== 'near') rebuildTileVisuals(pending, 'near');
+    return pending;
+  }
+
+  const promise = (async () => {
+    let prebuilt = null;
+    let elevationData;
+    let osmData = { elements: [] };
+    let osmError = null;
+    let terrainReal = false;
+    let osmReal = false;
+    let dataMode = 'live API';
+    try {
+      try { prebuilt = await fetchPrebuiltTile(address); }
+      catch (error) {
+        console.warn(`Prebuilt tile ${address.key} could not be used.`, error);
+        if (!allowLive) return null;
+      }
+      if (prebuilt) {
+        elevationData = {
+          segments: prebuilt.terrain.segments,
+          points: [],
+          heights: prebuilt.terrain.heights,
+          source: prebuilt.terrain.source || 'prebuilt elevation tile',
+        };
+        osmData = prebuilt.osm;
+        const sourceLooksReal = !/(fallback|not included|placeholder|not real)/i.test(String(elevationData.source));
+        const noDataSamples = Number(prebuilt.terrain.nodataSamples || 0);
+        const heightSamples = Number(prebuilt.terrain.sampleCount || prebuilt.terrain.heights.length);
+        terrainReal = sourceLooksReal && heightSamples > 0 && noDataSamples / heightSamples <= 0.05;
+        osmReal = !/not included/i.test(String(prebuilt.osm.source || ''));
+        dataMode = 'prebuilt static tile';
+      } else {
+        if (!allowLive) return null; // prefetch is static-only; never fan out live API calls to eight neighbors
+        if (window.BDOW_CONFIG?.allowLiveFallback === false) {
+          throw new Error(`Static world tile ${address.key} is not hosted. Build it from the national dataset or enable live fallback in config.js.`);
+        }
+        const results = await Promise.allSettled([fetchTerrain(address.origin), fetchOSM(address.origin)]);
+        if (results[0].status === 'fulfilled') {
+          elevationData = results[0].value;
+          terrainReal = elevationData.source !== 'fallback';
+        } else {
+          terrainReal = false;
+          elevationData = makeFallbackTerrain(address.origin);
+          console.warn(`DEM service failed for ${address.key}; illustrative fallback terrain is being used.`, results[0].reason);
+        }
+        if (results[1].status === 'fulfilled') { osmData = results[1].value; osmReal = true; }
+        else { osmError = results[1].reason; osmReal = false; }
+      }
+    } catch (error) {
+      if (!allowLive) return null;
+      throw error;
+    }
+
+    const tile = { key: address.key, origin: address.origin, ...elevationData };
+    const group = new THREE.Group();
+    group.name = `WORLD_TILE_${address.key}`;
+    const record = {
+      key: address.key, address, tile, group, osmData, osmError,
+      terrainReal, osmReal, terrainSource: elevationData.source || 'unknown elevation source',
+      dataMode, quality, stats: null, lastUsed: performance.now(),
+    };
+    // The tile's mesh coordinates are local to its tile origin; the parent transform locates it in the world.
+    rebuildTileVisuals(record, quality);
+    worldGroup.add(group);
+    residentTiles.set(record.key, record);
+    tileRetryAfter.delete(record.key);
+    evictDistantTiles();
+    return record;
+  })();
+  tileLoadPromises.set(address.key, promise);
+  try { return await promise; }
+  finally { tileLoadPromises.delete(address.key); }
+}
+
+async function prefetchNeighborTiles(address) {
+  if (lastPrefetchKey === address.key) return;
+  lastPrefetchKey = address.key;
+  const neighbors = [];
+  for (let rowOffset = -1; rowOffset <= 1; rowOffset++) {
+    for (let colOffset = -1; colOffset <= 1; colOffset++) {
+      if (rowOffset === 0 && colOffset === 0) continue;
+      const neighbor = tileAddressAtGrid(address.row + rowOffset, address.col + colOffset);
+      if (!residentTiles.has(neighbor.key) && !tileLoadPromises.has(neighbor.key)) neighbors.push(neighbor);
     }
   }
-  return { segments, points, heights, source: 'fallback' };
+  // Small concurrency protects the static host and browser memory. Neighbors are static-only prefetches.
+  let cursor = 0;
+  const worker = async () => {
+    while (cursor < neighbors.length) {
+      const item = neighbors[cursor++];
+      try { await loadTileRecord(item, { allowLive: false, quality: 'far' }); }
+      catch (error) { console.debug(`Neighbor tile ${item.key} not prefetched:`, error); }
+    }
+  };
+  await Promise.all([worker(), worker()]);
+  evictDistantTiles();
+}
+
+function rebaseWorldTo(record, playerGeo, altitudeAboveGround = 120) {
+  if (!record) return;
+  origin = { lat: record.tile.origin.lat, lon: record.tile.origin.lon };
+  repositionResidentTiles();
+  const targetLocal = centerWorldCoords(playerGeo.lat, playerGeo.lon, origin);
+  const tileLocal = centerWorldCoords(playerGeo.lat, playerGeo.lon, record.tile.origin);
+  const ground = heightSampler(record.tile, tileLocal.x, tileLocal.z);
+  camera.position.set(targetLocal.x, ground + altitudeAboveGround, targetLocal.z);
+  activeTile = record.tile;
+  activeTileKey = record.key;
+  updateActiveTileStatus(record);
+}
+
+async function loadWorldTile(lat, lon, reason = 'travel', keepCamera = false) {
+  const address = tileAddressFor(lat, lon);
+  const isBlocking = !worldReady || reason === 'travel';
+  const oldGeo = worldReady ? currentLatLon() : null;
+  let altitudeAboveGround = 180;
+  const oldRecord = currentTileRecord();
+  if (oldRecord) {
+    const local = tileLocalXZ(oldRecord);
+    altitudeAboveGround = camera.position.y - heightSampler(oldRecord.tile, local.x, local.z);
+  }
+  if (isBlocking) {
+    tileLoading = true;
+    setLoadingVeil(true, reason === 'initial' ? 'Building first 3D world area' : 'Traveling to new world area', 'Loading real terrain and mapped features. Background streaming remains enabled during exploration.');
+    setWorldState('LOADING WORLD DATA');
+    $('enterButton').disabled = true;
+  }
+
+  try {
+    const record = await loadTileRecord(address, { allowLive: true, quality: 'near' });
+    if (!record) throw new Error(`Could not load world tile ${address.key}.`);
+    const currentGeo = reason === 'rebase' && worldReady ? currentLatLon() : null;
+
+    if (reason === 'initial') {
+      origin = { lat: record.tile.origin.lat, lon: record.tile.origin.lon };
+      repositionResidentTiles();
+      const targetLocal = centerWorldCoords(lat, lon, origin);
+      const localTile = centerWorldCoords(lat, lon, record.tile.origin);
+      const startZ = targetLocal.z;
+      const startX = targetLocal.x;
+      const startGround = heightSampler(record.tile, localTile.x, localTile.z);
+      camera.position.set(startX, startGround + 185, startZ);
+      yaw = 0; pitch = -0.18;
+      camera.rotation.set(pitch, yaw, 0);
+      worldReady = true;
+    } else if (reason === 'travel') {
+      origin = { lat: record.tile.origin.lat, lon: record.tile.origin.lon };
+      repositionResidentTiles();
+      const targetLocal = centerWorldCoords(lat, lon, origin);
+      const localTile = centerWorldCoords(lat, lon, record.tile.origin);
+      const startZ = targetLocal.z;
+      const startGround = heightSampler(record.tile, localTile.x, localTile.z);
+      camera.position.set(targetLocal.x, startGround + 230, startZ);
+      yaw = 0; pitch = -0.22;
+      camera.rotation.set(pitch, yaw, 0);
+      worldReady = true;
+    } else if (reason === 'rebase' && currentGeo) {
+      const nowAddress = tileAddressFor(currentGeo.lat, currentGeo.lon);
+      if (nowAddress.key === record.key) rebaseWorldTo(record, currentGeo, altitudeAboveGround);
+    }
+
+    const playerPosition = currentLatLon();
+    const playerAddress = tileAddressFor(playerPosition.lat, playerPosition.lon);
+    const playerRecord = residentTiles.get(playerAddress.key);
+    if (playerRecord) {
+      if (playerRecord.key !== activeTileKey) {
+        const local = tileLocalXZ(playerRecord);
+        const aboveGround = camera.position.y - heightSampler(playerRecord.tile, local.x, local.z);
+        rebaseWorldTo(playerRecord, playerPosition, Math.max(2, aboveGround));
+      } else updateActiveTileStatus(playerRecord);
+    }
+
+    setWorldState('WORLD STREAMING');
+    if (isBlocking) {
+      $('enterButton').disabled = false;
+      $('loadingMessage').textContent = `World tile ${record.key} loaded. Nearby tiles stream automatically. Click the scene and use WASD to explore.`;
+      setLoadingVeil(false);
+      tileLoading = false;
+    }
+    updateHUD();
+    if (record.osmError) toast('Terrain loaded; mapped features were unavailable in this tile. Streaming can retry in another area.');
+    else toast(`${record.key} ready · ${residentTiles.size} world tiles in memory`);
+    prefetchNeighborTiles(address).catch((error) => console.debug('Neighbor prefetch skipped:', error));
+    return record;
+  } catch (error) {
+    if (isBlocking) {
+      $('loadingMessage').textContent = `World data error: ${error.message}`;
+      setLoadingVeil(false);
+      tileLoading = false;
+      $('enterButton').disabled = false;
+    }
+    throw error;
+  }
+}
+
+function updateTileQuality(currentAddress) {
+  if (!worldReady) return;
+  for (const record of residentTiles.values()) {
+    const shouldBeNear = record.key === currentAddress.key || record.key === lookAheadTileKey;
+    if (shouldBeNear && record.quality !== 'near') {
+      rebuildTileVisuals(record, 'near');
+    } else if (!shouldBeNear && record.quality !== 'far' && distanceToRecord(record) > TILE_DEMOTE_DISTANCE_M) {
+      rebuildTileVisuals(record, 'far');
+    }
+  }
 }
 
 function shouldRebase() {
-  if (!activeTile || tileLoading || !hasEntered) return;
+  if (!worldReady) return;
+  const now = performance.now();
+  if (now - lastStreamCheck < 300) return;
+  lastStreamCheck = now;
   const pos = currentLatLon();
-  const nextAddress = tileAddressFor(pos.lat, pos.lon);
-  // Rebase only when crossing into a different fixed grid cell; don't reload the same tile.
-  if (nextAddress.key !== activeTile.key) {
-    const now = performance.now();
-    if (now - lastRebaseAt < 1200) return;
-    lastRebaseAt = now;
-    loadWorldTile(pos.lat, pos.lon, 'rebase', false).catch(showFatalError);
+  const currentAddress = tileAddressFor(pos.lat, pos.lon);
+  const resident = residentTiles.get(currentAddress.key);
+  if (resident && activeTileKey !== currentAddress.key) {
+    const currentLocal = tileLocalXZ(resident);
+    const altitude = camera.position.y - heightSampler(resident.tile, currentLocal.x, currentLocal.z);
+    rebaseWorldTo(resident, pos, Math.max(2, altitude));
+    prefetchNeighborTiles(currentAddress).catch((error) => console.debug('Neighbor prefetch skipped:', error));
+  } else if (!resident && !tileLoadPromises.has(currentAddress.key) && now >= (tileRetryAfter.get(currentAddress.key) || 0)) {
+    loadWorldTile(pos.lat, pos.lon, 'rebase', true).catch((error) => {
+      tileRetryAfter.set(currentAddress.key, performance.now() + 12000);
+      if (lastStreamErrorKey !== currentAddress.key) {
+        lastStreamErrorKey = currentAddress.key;
+        toast(`World tile ${currentAddress.key} is not ready: ${error.message}`);
+      }
+    });
   }
+
+  // Look ahead in camera direction. Request the next tile before the player reaches its border.
+  const forward = new THREE.Vector3(-Math.sin(yaw), 0, -Math.cos(yaw));
+  const lookAheadMeters = 900;
+  const aheadGeo = latLonAtWorld(camera.position.x + forward.x * lookAheadMeters, camera.position.z + forward.z * lookAheadMeters);
+  const aheadAddress = tileAddressFor(aheadGeo.lat, aheadGeo.lon);
+  lookAheadTileKey = aheadAddress.key !== currentAddress.key ? aheadAddress.key : null;
+  if (lookAheadTileKey && !residentTiles.has(aheadAddress.key) && !tileLoadPromises.has(aheadAddress.key) && now >= (tileRetryAfter.get(aheadAddress.key) || 0)) {
+    loadTileRecord(aheadAddress, { allowLive: true, quality: 'near' }).then((record) => {
+      if (record) {
+        positionResidentTile(record);
+        evictDistantTiles();
+      }
+    }).catch((error) => {
+      tileRetryAfter.set(aheadAddress.key, performance.now() + 15000);
+      if (lastStreamErrorKey !== aheadAddress.key) {
+        lastStreamErrorKey = aheadAddress.key;
+        console.debug(`Look-ahead tile ${aheadAddress.key} failed:`, error);
+      }
+    });
+  }
+  updateTileQuality(currentAddress);
+  const active = residentTiles.get(currentAddress.key);
+  if (active) updateActiveTileStatus(active);
+  evictDistantTiles();
 }
 
 function teleportTo(place) {
@@ -732,7 +1110,7 @@ function togglePanel(force) {
 }
 
 function moveCamera(dt) {
-  if (!hasEntered || tileLoading || document.pointerLockElement !== renderer.domElement) return;
+  if (!hasEntered || !worldReady || document.pointerLockElement !== renderer.domElement) return;
   const forward = new THREE.Vector3(-Math.sin(yaw), 0, -Math.cos(yaw));
   const right = new THREE.Vector3(Math.cos(yaw), 0, -Math.sin(yaw));
   let dx = 0, dz = 0;
@@ -751,16 +1129,22 @@ function moveCamera(dt) {
     if (keys.has('Space') || keys.has('KeyE')) camera.position.y += speed * 0.78 * dt;
     if (keys.has('KeyC') || keys.has('KeyQ')) camera.position.y -= speed * 0.78 * dt;
     camera.position.y = Math.max(2, camera.position.y);
-  } else if (activeTile) {
-    camera.position.y = heightSampler(activeTile, camera.position.x, camera.position.z) + 1.75;
+  } else {
+    const record = currentTileRecord();
+    if (record) {
+      const local = tileLocalXZ(record);
+      camera.position.y = heightSampler(record.tile, local.x, local.z) + 1.75;
+    }
   }
 }
 
 function toggleGroundMode() {
-  if (!activeTile) return;
+  const record = currentTileRecord();
+  if (!record) return;
   isGroundMode = !isGroundMode;
-  if (isGroundMode) camera.position.y = heightSampler(activeTile, camera.position.x, camera.position.z) + 1.75;
-  else camera.position.y = heightSampler(activeTile, camera.position.x, camera.position.z) + 120;
+  const local = tileLocalXZ(record);
+  const ground = heightSampler(record.tile, local.x, local.z);
+  camera.position.y = ground + (isGroundMode ? 1.75 : 120);
   setStatus('modeValue', isGroundMode ? 'GROUND FOLLOW' : 'DRONE');
   toast(isGroundMode ? 'Ground-follow mode enabled' : 'Drone mode enabled');
   updateHUD();
@@ -825,4 +1209,5 @@ setWorldState('READY TO ENTER');
 setStatus('terrainState', 'Waiting to load real elevation');
 setStatus('featureState', 'Waiting for mapped OSM geometry');
 setStatus('buildingState', 'Waiting for OSM geometry');
+setStatus('tileState', '3 km tiles · look-ahead streaming · 100 m building LOD');
 animate();

@@ -34,7 +34,7 @@
     <aside id="worldPanel" class="world-panel glass">
       <div class="panel-kicker">WORLD NAVIGATION</div>
       <h2>Explore Bangladesh</h2>
-      <p class="panel-copy">This is a 3D scene, not a map layer. Real terrain elevations and mapped features are converted into 3D geometry around the player.</p>
+      <p class="panel-copy">This is a streamed 3D world, not a map layer. Nearby buildings use detailed footprint geometry inside a 100 m camera radius; distant buildings switch to low-detail blocks. The terrain detail is still limited by the source DEM resolution.</p>
 
       <label for="locationSelect">Fast travel</label>
       <select id="locationSelect">
@@ -56,9 +56,9 @@
 
       <div class="panel-kicker">WORLD DATA</div>
       <div class="data-row"><span class="data-orb terrain-orb"></span><div><strong>Terrain surface</strong><small id="terrainState">Waiting to load elevation</small></div></div>
-      <div class="data-row"><span class="data-orb roads-orb"></span><div><strong>Roads & waterways</strong><small id="featureState">Waiting for OSM geometry</small></div></div>
+      <div class="data-row"><span class="data-orb roads-orb"></span><div><strong>Roads, rail & waterways</strong><small id="featureState">Waiting for OSM geometry</small></div></div>
       <div class="data-row"><span class="data-orb buildings-orb"></span><div><strong>Building geometry</strong><small id="buildingState">Waiting for OSM geometry</small></div></div>
-      <div class="data-row"><span class="data-orb stream-orb"></span><div><strong>Current world tile</strong><small id="tileState">3 × 3 km streaming tile</small></div></div>
+      <div class="data-row"><span class="data-orb stream-orb"></span><div><strong>Current world tile</strong><small id="tileState">3 km tiles · look-ahead streaming · 100 m building LOD</small></div></div>
 
       <div class="panel-rule"></div>
       <div class="panel-kicker">CONTROLS</div>
@@ -70,8 +70,8 @@
       <div class="control-line"><kbd>Tab</kbd><span>Show / hide this panel</span></div>
       <div class="control-line"><kbd>Esc</kbd><span>Release mouse</span></div>
 
-      <div class="panel-note"><strong>Data honesty:</strong> local prebuilt tiles are used when available; otherwise this prototype requests live public data. The terrain is a broad-resolution GLO-90 DEM sampled at about 94 m for this tile. OSM roads, waterways and building footprints appear only where mapped and may be capped. Unknown building heights are estimated. Ground surface tint is illustrative, not verified land cover.</div>
-      <div class="attribution">Elevation © Copernicus DEM via Open-Meteo · Map geometry © OpenStreetMap contributors</div>
+      <div class="panel-note"><strong>Data honesty:</strong> local prebuilt tiles are used when available; otherwise this prototype requests live public data. Terrain depends on the DEM source and tile build settings. The default national profile targets GLO-90-scale samples. OSM roads, waterways and building footprints appear only where mapped and may be capped. Unknown building heights are estimated. Ground surface tint is illustrative, not verified land cover.</div>
+      <div class="attribution">Elevation: Copernicus DEM GLO-90 (source varies by tile build) · Geometry © OpenStreetMap contributors</div>
     </aside>
 
     <section id="startScreen" class="start-screen">
@@ -79,10 +79,10 @@
       <div class="start-card glass">
         <div class="hero-eyebrow"><span class="dot"></span> REAL-WORLD DATA · 3D GEOMETRY</div>
         <div class="hero-title">BANGLADESH<br /><em>OPEN WORLD</em></div>
-        <p>A browser-based, game-like 3D world. Terrain is a real elevation surface. Roads, rivers and building footprints are rebuilt as 3D objects at their mapped coordinates — not displayed as a 2D map. The engine checks for a prebuilt static tile before using live public data services.</p>
-        <div class="feature-pills"><span>Terrain mesh</span><span>3D road ribbons</span><span>Extruded buildings</span><span>Free-flight camera</span></div>
+        <p>A browser-based, game-like 3D world. Terrain and mapped features are rebuilt as 3D objects at geographic coordinates — not displayed as a 2D map. The streaming engine keeps a bounded set of world tiles, looks ahead in the camera direction and switches buildings between detailed footprints within 100 m and merged low-detail blocks farther away.</p>
+        <div class="feature-pills"><span>Terrain mesh</span><span>3D road ribbons</span><span>3D railway tracks</span><span>100 m building LOD</span><span>Auto tile streaming</span><span>Free-flight camera</span></div>
         <button id="enterButton" class="enter-button">ENTER THE WORLD <span>↗</span></button>
-        <div id="loadingMessage" class="loading-message">The first world tile loads from public elevation and OSM services when you enter.</div>
+        <div id="loadingMessage" class="loading-message">Loads one real-data tile first; nearby static tiles are prefetched. If static tiles are absent, live public data services are attempted on demand.</div>
         <div class="start-foot">PROTOTYPE · WORLD STREAMING · NO SATELLITE MAP TILES</div>
       </div>
     </section>
@@ -103,6 +103,7 @@
     <div id="loadingVeil" class="loading-veil" hidden><div class="loader-orbit"></div><strong id="veilTitle">Building world tile</strong><span id="veilDetail">Fetching terrain elevations and mapped geometry…</span></div>
     <div id="fatalError" class="fatal-error" hidden></div>
   </main>
+  <script src="./config.js"></script>
   <script type="module" src="./src/main.js"></script>
 </body>
 </html>

@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="bn">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#07131e" />
+  <meta name="description" content="Bangladesh 3D Digital Twin — web-based geospatial visualization prototype." />
+  <title>Bangladesh 3D Digital Twin</title>
+  <link rel="stylesheet" href="https://cesium.com/downloads/cesiumjs/releases/1.146/Build/Cesium/Widgets/widgets.css" />
+  <link rel="stylesheet" href="css/style.css" />
+  <script src="https://cesium.com/downloads/cesiumjs/releases/1.146/Build/Cesium/Cesium.js"></script>
+</head>
+<body>
+  <main id="appShell">
+    <div id="cesiumContainer" aria-label="Interactive 3D globe"></div>
+
+    <header class="topbar glass">
+      <div class="brandMark">BD</div>
+      <div class="brandText">
+        <div class="eyebrow">ENGINEERING VISUAL LAB · GEOSPATIAL</div>
+        <h1>Bangladesh <span>3D Digital Twin</span></h1>
+      </div>
+      <div class="phasePill"><span class="pulseDot"></span> STAGE 2 · 3D BUILDINGS</div>
+      <button id="terrainSettingsBtn" class="iconButton" title="Terrain settings" aria-label="Terrain settings">⚙</button>
+    </header>
+
+    <aside class="controlPanel glass">
+      <div class="panelIntro">
+        <div class="panelKicker">EXPLORE THE COUNTRY</div>
+        <h2>বাংলাদেশ 3D ভিউ</h2>
+        <p>বাস্তব স্থানাঙ্কভিত্তিক গ্লোব। ডেটা ধাপে ধাপে যোগ হবে।</p>
+      </div>
+
+      <label for="placeSearch" class="fieldLabel">স্থান খুঁজুন</label>
+      <div class="searchRow">
+        <input id="placeSearch" type="search" placeholder="যেমন: Dhaka, Cox's Bazar" autocomplete="off" />
+        <button id="searchBtn" class="accentButton" aria-label="Search location">যান ↗</button>
+      </div>
+      <select id="placeSelect" class="selectField" aria-label="Choose a place">
+        <option value="bangladesh">পুরো বাংলাদেশ</option>
+        <option value="dhaka">ঢাকা</option>
+        <option value="chattogram">চট্টগ্রাম</option>
+        <option value="khulna">খুলনা</option>
+        <option value="sylhet">সিলেট</option>
+        <option value="rajshahi">রাজশাহী</option>
+        <option value="rangpur">রংপুর</option>
+        <option value="barishal">বরিশাল</option>
+        <option value="mymensingh">ময়মনসিংহ</option>
+        <option value="coxsbazar">কক্সবাজার</option>
+        <option value="bandarban">বান্দরবান</option>
+        <option value="sundarbans">সুন্দরবন</option>
+        <option value="padmabridge">পদ্মা সেতু</option>
+      </select>
+      <button id="flyBtn" class="primaryButton">নির্বাচিত স্থানে যান <span>↗</span></button>
+      <div class="quickActions">
+        <button id="homeBtn" class="softButton">⟲ বাংলাদেশ ভিউ</button>
+        <button id="northBtn" class="softButton">↑ ওপর থেকে</button>
+      </div>
+
+      <div class="sectionDivider"></div>
+      <div class="sectionHeader">
+        <div>
+          <div class="panelKicker">MAP DATA</div>
+          <h3>ডেটা লেয়ার</h3>
+        </div>
+        <span class="tinyTag">ON DEMAND</span>
+      </div>
+      <div class="layerStatusRow">
+        <span class="statusIcon satelliteIcon">◉</span>
+        <div class="layerText"><strong>Satellite imagery</strong><small>World imagery · Esri</small></div>
+        <span class="liveState">LIVE</span>
+      </div>
+      <div class="layerStatusRow">
+        <span class="statusIcon terrainIcon">⌁</span>
+        <div class="layerText"><strong>3D terrain</strong><small id="terrainStatus">Ellipsoid fallback</small></div>
+        <button id="terrainInlineBtn" class="miniButton">সেটআপ</button>
+      </div>
+      <div class="layerStatusRow">
+        <span class="statusIcon vectorIcon">⌘</span>
+        <div class="layerText"><strong>বাংলাদেশ-wide vector layer</strong><small id="nationalVectorStatus">Off · streaming vector tiles</small></div>
+      </div>
+      <button id="loadNationalVectorBtn" class="secondaryButton">দেশজুড়ে রাস্তা/নদী/রেল লোড করুন</button>
+      <button id="removeNationalVectorBtn" class="textButton" disabled>দেশজুড়ে vector layer বন্ধ করুন</button>
+      <div class="microNote">OpenFreeMap/OpenMapTiles ডেটা টাইল ধরে লোড হবে, পুরো দেশের ডেটা একবারে ডাউনলোড হবে না। এটি পরীক্ষামূলক Cesium vector layer।</div>
+
+      <div class="layerStatusRow">
+        <span class="statusIcon buildingIcon">▦</span>
+        <div class="layerText"><strong>OSM 3D Buildings</strong><small id="buildingStatus">Off · Cesium ion token needed</small></div>
+      </div>
+      <button id="loadBuildingsBtn" class="secondaryButton">3D Buildings লোড করুন</button>
+      <button id="removeBuildingsBtn" class="textButton" disabled>3D Buildings লেয়ার বন্ধ করুন</button>
+      <div class="microNote">এটি স্ট্রিমিং 3D Tiles। বাংলাদেশে ভবনের কভারেজ OpenStreetMap-এর বিদ্যমান ডেটার ওপর নির্ভরশীল।</div>
+
+      <div class="sectionDivider"></div>
+      <div class="layerStatusRow">
+        <span class="statusIcon roadIcon">↗</span>
+        <div class="layerText"><strong>রাস্তা, নদী ও রেললাইন</strong><small>OpenStreetMap · বর্তমান এলাকার কাছাকাছি</small></div>
+      </div>
+      <label for="osmRadius" class="fieldLabel">ডেটা অনুসন্ধানের ব্যাসার্ধ</label>
+      <select id="osmRadius" class="selectField" aria-label="OSM query radius">
+        <option value="2">২ কিমি — দ্রুত</option>
+        <option value="4" selected>৪ কিমি — সাধারণ</option>
+        <option value="6">৬ কিমি — বেশি ডেটা</option>
+      </select>
+      <button id="loadOsmBtn" class="secondaryButton">বর্তমান এলাকার রাস্তা/নদী/রেল লোড করুন</button>
+      <div class="microNote">শুধু বর্তমান ক্যামেরার আশেপাশের নির্বাচিত ব্যাসার্ধ লোড হবে; এটি এখনো পুরো দেশের স্থায়ী ডেটাসেট নয়।</div>
+      <button id="clearOsmBtn" class="textButton" disabled>লোকাল রাস্তা/নদী/রেল মুছুন</button>
+
+      <div class="sectionDivider"></div>
+      <div class="sectionHeader">
+        <div>
+          <div class="panelKicker">YOUR GIS FILES</div>
+          <h3>নিজের ডেটা যোগ করুন</h3>
+        </div>
+      </div>
+      <p class="smallCopy">GeoJSON ফাইল যোগ করে নিজের রাস্তা, নদী, সীমানা বা ভবনের ডেটা ম্যাপে দেখুন।</p>
+      <input id="geojsonInput" type="file" accept=".geojson,.json,application/geo+json,application/json" hidden />
+      <button id="importGeojsonBtn" class="secondaryButton">＋ GeoJSON ইমপোর্ট</button>
+      <div id="importStatus" class="microNote" aria-live="polite">কোনো ফাইল ইমপোর্ট করা হয়নি।</div>
+
+      <div class="panelFooter">
+        <span class="footerDot"></span>
+        <span id="appStatus" aria-live="polite">3D গ্লোব প্রস্তুত হচ্ছে…</span>
+      </div>
+    </aside>
+
+    <div class="rightControls glass" aria-label="Camera controls">
+      <button id="zoomInBtn" title="Zoom in" aria-label="Zoom in">＋</button>
+      <button id="zoomOutBtn" title="Zoom out" aria-label="Zoom out">−</button>
+      <div class="controlRule"></div>
+      <button id="resetCameraBtn" title="Reset camera" aria-label="Reset camera">⌖</button>
+    </div>
+
+    <div class="bottomHud glass">
+      <div class="hudItem"><span class="hudLabel">LAT</span><strong id="latReadout">23.7000°</strong></div>
+      <div class="hudItem"><span class="hudLabel">LON</span><strong id="lonReadout">90.3500°</strong></div>
+      <div class="hudItem"><span class="hudLabel">ALTITUDE</span><strong id="altReadout">—</strong></div>
+      <div class="hudSeparator"></div>
+      <div class="hudHint"><span class="mouseGlyph">↖</span> Drag to orbit · Scroll to zoom · Right-drag to tilt</div>
+    </div>
+
+    <div class="creditStrip">Imagery © Esri · OpenFreeMap © OpenMapTiles · Data © OpenStreetMap contributors</div>
+
+    <div id="terrainModal" class="modalBackdrop" hidden>
+      <section class="modal glass" role="dialog" aria-modal="true" aria-labelledby="terrainModalTitle">
+        <button id="closeTerrainModal" class="modalClose" aria-label="Close">×</button>
+        <div class="panelKicker">OPTIONAL · CESIUM ION</div>
+        <h2 id="terrainModalTitle">বাস্তব 3D Terrain চালু করুন</h2>
+        <p>Terrain যোগ করতে Cesium ion access token দরকার। Token ছাড়া অ্যাপ চলবে, তবে ভূমির উচ্চতা বাস্তবভাবে ওঠানামা করবে না।</p>
+        <a href="https://ion.cesium.com/tokens" target="_blank" rel="noopener noreferrer">Cesium ion থেকে token নিন ↗</a>
+        <label for="ionToken" class="fieldLabel">Access token</label>
+        <input id="ionToken" class="tokenInput" type="password" placeholder="Cesium ion token paste করুন" autocomplete="off" />
+        <div class="modalActions">
+          <button id="enableTerrainBtn" class="primaryButton">Token ব্যবহার করুন</button>
+          <button id="removeTokenBtn" class="softButton">Token মুছে দিন</button>
+        </div>
+        <p class="warningNote">Token এই ব্রাউজার ট্যাবের session storage-এ থাকবে; ট্যাব বন্ধ করলে মুছে যাবে। পাবলিক সাইটে ব্যবহারের জন্য সীমিত permission-সহ token তৈরি করুন।</p>
+      </section>
+    </div>
+
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  </main>
+  <script src="js/app.js"></script>
+</body>
+</html>

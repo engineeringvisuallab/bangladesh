@@ -1,165 +1,108 @@
 <!doctype html>
-<html lang="bn">
+<html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <meta name="theme-color" content="#07131e" />
-  <meta name="description" content="Bangladesh 3D Digital Twin — web-based geospatial visualization prototype." />
-  <title>Bangladesh 3D Digital Twin</title>
-  <link rel="stylesheet" href="https://cesium.com/downloads/cesiumjs/releases/1.146/Build/Cesium/Widgets/widgets.css" />
-  <link rel="stylesheet" href="css/style.css" />
-  <script src="https://cesium.com/downloads/cesiumjs/releases/1.146/Build/Cesium/Cesium.js"></script>
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#08141a" />
+  <meta name="description" content="Bangladesh Open World — an experimental, game-like 3D world built from real elevation and OpenStreetMap geometry." />
+  <title>Bangladesh Open World | EVLab</title>
+  <link rel="stylesheet" href="./src/style.css" />
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.js",
+        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.186.1/examples/jsm/"
+      }
+    }
+  </script>
 </head>
 <body>
-  <main id="appShell">
-    <div id="cesiumContainer" aria-label="Interactive 3D globe"></div>
+  <main id="game">
+    <div id="viewport" aria-label="Bangladesh 3D open world scene"></div>
+    <div class="vignette" aria-hidden="true"></div>
 
-    <header class="topbar glass">
-      <div class="brandMark">BD</div>
-      <div class="brandText">
-        <div class="eyebrow">ENGINEERING VISUAL LAB · GEOSPATIAL</div>
-        <h1>Bangladesh <span>3D Digital Twin</span></h1>
+    <header class="brandbar glass">
+      <div class="brand-symbol">BD<span>3D</span></div>
+      <div class="brand-lines">
+        <div class="eyebrow">ENGINEERING VISUAL LAB</div>
+        <h1>Bangladesh <strong>Open World</strong></h1>
       </div>
-      <div class="phasePill"><span class="pulseDot"></span> STAGE 2 · 3D BUILDINGS</div>
-      <button id="terrainSettingsBtn" class="iconButton" title="Terrain settings" aria-label="Terrain settings">⚙</button>
+      <div class="world-chip"><span class="dot"></span><span id="worldState">WORLD ENGINE STARTING</span></div>
+      <button id="panelToggle" class="icon-button" title="Toggle world panel (Tab)">☰</button>
     </header>
 
-    <aside class="controlPanel glass">
-      <div class="panelIntro">
-        <div class="panelKicker">EXPLORE THE COUNTRY</div>
-        <h2>বাংলাদেশ 3D ভিউ</h2>
-        <p>বাস্তব স্থানাঙ্কভিত্তিক গ্লোব। ডেটা ধাপে ধাপে যোগ হবে।</p>
-      </div>
+    <aside id="worldPanel" class="world-panel glass">
+      <div class="panel-kicker">WORLD NAVIGATION</div>
+      <h2>Explore Bangladesh</h2>
+      <p class="panel-copy">This is a 3D scene, not a map layer. Real terrain elevations and mapped features are converted into 3D geometry around the player.</p>
 
-      <label for="placeSearch" class="fieldLabel">স্থান খুঁজুন</label>
-      <div class="searchRow">
-        <input id="placeSearch" type="search" placeholder="যেমন: Dhaka, Cox's Bazar" autocomplete="off" />
-        <button id="searchBtn" class="accentButton" aria-label="Search location">যান ↗</button>
-      </div>
-      <select id="placeSelect" class="selectField" aria-label="Choose a place">
-        <option value="bangladesh">পুরো বাংলাদেশ</option>
-        <option value="dhaka">ঢাকা</option>
-        <option value="chattogram">চট্টগ্রাম</option>
-        <option value="khulna">খুলনা</option>
-        <option value="sylhet">সিলেট</option>
-        <option value="rajshahi">রাজশাহী</option>
-        <option value="rangpur">রংপুর</option>
-        <option value="barishal">বরিশাল</option>
-        <option value="mymensingh">ময়মনসিংহ</option>
-        <option value="coxsbazar">কক্সবাজার</option>
-        <option value="bandarban">বান্দরবান</option>
-        <option value="sundarbans">সুন্দরবন</option>
-        <option value="padmabridge">পদ্মা সেতু</option>
+      <label for="locationSelect">Fast travel</label>
+      <select id="locationSelect">
+        <option value="dhaka">Dhaka</option>
+        <option value="gazipur">Gazipur</option>
+        <option value="chattogram">Chattogram</option>
+        <option value="khulna">Khulna</option>
+        <option value="sylhet">Sylhet</option>
+        <option value="rajshahi">Rajshahi</option>
+        <option value="rangpur">Rangpur</option>
+        <option value="barishal">Barishal</option>
+        <option value="coxsbazar">Cox's Bazar</option>
+        <option value="bandarban">Bandarban</option>
+        <option value="sundarbans">Sundarbans</option>
+        <option value="padma">Padma Bridge</option>
       </select>
-      <button id="flyBtn" class="primaryButton">নির্বাচিত স্থানে যান <span>↗</span></button>
-      <div class="quickActions">
-        <button id="homeBtn" class="softButton">⟲ বাংলাদেশ ভিউ</button>
-        <button id="northBtn" class="softButton">↑ ওপর থেকে</button>
-      </div>
+      <button id="travelButton" class="button-primary">Travel to location <span>↗</span></button>
+      <div class="panel-rule"></div>
 
-      <div class="sectionDivider"></div>
-      <div class="sectionHeader">
-        <div>
-          <div class="panelKicker">MAP DATA</div>
-          <h3>ডেটা লেয়ার</h3>
-        </div>
-        <span class="tinyTag">ON DEMAND</span>
-      </div>
-      <div class="layerStatusRow">
-        <span class="statusIcon satelliteIcon">◉</span>
-        <div class="layerText"><strong>Satellite imagery</strong><small>World imagery · Esri</small></div>
-        <span class="liveState">LIVE</span>
-      </div>
-      <div class="layerStatusRow">
-        <span class="statusIcon terrainIcon">⌁</span>
-        <div class="layerText"><strong>3D terrain</strong><small id="terrainStatus">Ellipsoid fallback</small></div>
-        <button id="terrainInlineBtn" class="miniButton">সেটআপ</button>
-      </div>
-      <div class="layerStatusRow">
-        <span class="statusIcon vectorIcon">⌘</span>
-        <div class="layerText"><strong>বাংলাদেশ-wide vector layer</strong><small id="nationalVectorStatus">Off · streaming vector tiles</small></div>
-      </div>
-      <button id="loadNationalVectorBtn" class="secondaryButton">দেশজুড়ে রাস্তা/নদী/রেল লোড করুন</button>
-      <button id="removeNationalVectorBtn" class="textButton" disabled>দেশজুড়ে vector layer বন্ধ করুন</button>
-      <div class="microNote">OpenFreeMap/OpenMapTiles ডেটা টাইল ধরে লোড হবে, পুরো দেশের ডেটা একবারে ডাউনলোড হবে না। এটি পরীক্ষামূলক Cesium vector layer।</div>
+      <div class="panel-kicker">WORLD DATA</div>
+      <div class="data-row"><span class="data-orb terrain-orb"></span><div><strong>Terrain surface</strong><small id="terrainState">Waiting to load elevation</small></div></div>
+      <div class="data-row"><span class="data-orb roads-orb"></span><div><strong>Roads & waterways</strong><small id="featureState">Waiting for OSM geometry</small></div></div>
+      <div class="data-row"><span class="data-orb buildings-orb"></span><div><strong>Building geometry</strong><small id="buildingState">Waiting for OSM geometry</small></div></div>
+      <div class="data-row"><span class="data-orb stream-orb"></span><div><strong>Current world tile</strong><small id="tileState">3 × 3 km streaming tile</small></div></div>
 
-      <div class="layerStatusRow">
-        <span class="statusIcon buildingIcon">▦</span>
-        <div class="layerText"><strong>OSM 3D Buildings</strong><small id="buildingStatus">Off · Cesium ion token needed</small></div>
-      </div>
-      <button id="loadBuildingsBtn" class="secondaryButton">3D Buildings লোড করুন</button>
-      <button id="removeBuildingsBtn" class="textButton" disabled>3D Buildings লেয়ার বন্ধ করুন</button>
-      <div class="microNote">এটি স্ট্রিমিং 3D Tiles। বাংলাদেশে ভবনের কভারেজ OpenStreetMap-এর বিদ্যমান ডেটার ওপর নির্ভরশীল।</div>
+      <div class="panel-rule"></div>
+      <div class="panel-kicker">CONTROLS</div>
+      <div class="control-line"><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd><span>Move</span></div>
+      <div class="control-line"><kbd>Mouse</kbd><span>Look around (click scene first)</span></div>
+      <div class="control-line"><kbd>Shift</kbd><span>Fast movement</span></div>
+      <div class="control-line"><kbd>Space</kbd><kbd>C</kbd><span>Rise / descend in drone mode</span></div>
+      <div class="control-line"><kbd>F</kbd><span>Toggle ground follow / drone</span></div>
+      <div class="control-line"><kbd>Tab</kbd><span>Show / hide this panel</span></div>
+      <div class="control-line"><kbd>Esc</kbd><span>Release mouse</span></div>
 
-      <div class="sectionDivider"></div>
-      <div class="layerStatusRow">
-        <span class="statusIcon roadIcon">↗</span>
-        <div class="layerText"><strong>রাস্তা, নদী ও রেললাইন</strong><small>OpenStreetMap · বর্তমান এলাকার কাছাকাছি</small></div>
-      </div>
-      <label for="osmRadius" class="fieldLabel">ডেটা অনুসন্ধানের ব্যাসার্ধ</label>
-      <select id="osmRadius" class="selectField" aria-label="OSM query radius">
-        <option value="2">২ কিমি — দ্রুত</option>
-        <option value="4" selected>৪ কিমি — সাধারণ</option>
-        <option value="6">৬ কিমি — বেশি ডেটা</option>
-      </select>
-      <button id="loadOsmBtn" class="secondaryButton">বর্তমান এলাকার রাস্তা/নদী/রেল লোড করুন</button>
-      <div class="microNote">শুধু বর্তমান ক্যামেরার আশেপাশের নির্বাচিত ব্যাসার্ধ লোড হবে; এটি এখনো পুরো দেশের স্থায়ী ডেটাসেট নয়।</div>
-      <button id="clearOsmBtn" class="textButton" disabled>লোকাল রাস্তা/নদী/রেল মুছুন</button>
-
-      <div class="sectionDivider"></div>
-      <div class="sectionHeader">
-        <div>
-          <div class="panelKicker">YOUR GIS FILES</div>
-          <h3>নিজের ডেটা যোগ করুন</h3>
-        </div>
-      </div>
-      <p class="smallCopy">GeoJSON ফাইল যোগ করে নিজের রাস্তা, নদী, সীমানা বা ভবনের ডেটা ম্যাপে দেখুন।</p>
-      <input id="geojsonInput" type="file" accept=".geojson,.json,application/geo+json,application/json" hidden />
-      <button id="importGeojsonBtn" class="secondaryButton">＋ GeoJSON ইমপোর্ট</button>
-      <div id="importStatus" class="microNote" aria-live="polite">কোনো ফাইল ইমপোর্ট করা হয়নি।</div>
-
-      <div class="panelFooter">
-        <span class="footerDot"></span>
-        <span id="appStatus" aria-live="polite">3D গ্লোব প্রস্তুত হচ্ছে…</span>
-      </div>
+      <div class="panel-note"><strong>Data honesty:</strong> the terrain uses a 90 m DEM sampled for this prototype. OSM roads, waterways and building footprints appear only where mapped. Unknown building heights are estimated. Ground surface tint is illustrative, not verified land cover.</div>
+      <div class="attribution">Elevation © Copernicus DEM via Open-Meteo · Map geometry © OpenStreetMap contributors</div>
     </aside>
 
-    <div class="rightControls glass" aria-label="Camera controls">
-      <button id="zoomInBtn" title="Zoom in" aria-label="Zoom in">＋</button>
-      <button id="zoomOutBtn" title="Zoom out" aria-label="Zoom out">−</button>
-      <div class="controlRule"></div>
-      <button id="resetCameraBtn" title="Reset camera" aria-label="Reset camera">⌖</button>
-    </div>
+    <section id="startScreen" class="start-screen">
+      <div class="start-backdrop"></div>
+      <div class="start-card glass">
+        <div class="hero-eyebrow"><span class="dot"></span> REAL-WORLD DATA · 3D GEOMETRY</div>
+        <div class="hero-title">BANGLADESH<br /><em>OPEN WORLD</em></div>
+        <p>A browser-based, game-like 3D world. Terrain is a real elevation surface. Roads, rivers and building footprints are rebuilt as 3D objects at their mapped coordinates — not displayed as a 2D map.</p>
+        <div class="feature-pills"><span>Terrain mesh</span><span>3D road ribbons</span><span>Extruded buildings</span><span>Free-flight camera</span></div>
+        <button id="enterButton" class="enter-button">ENTER THE WORLD <span>↗</span></button>
+        <div id="loadingMessage" class="loading-message">The first world tile loads from public elevation and OSM services when you enter.</div>
+        <div class="start-foot">PROTOTYPE · WORLD STREAMING · NO SATELLITE MAP TILES</div>
+      </div>
+    </section>
 
-    <div class="bottomHud glass">
-      <div class="hudItem"><span class="hudLabel">LAT</span><strong id="latReadout">23.7000°</strong></div>
-      <div class="hudItem"><span class="hudLabel">LON</span><strong id="lonReadout">90.3500°</strong></div>
-      <div class="hudItem"><span class="hudLabel">ALTITUDE</span><strong id="altReadout">—</strong></div>
-      <div class="hudSeparator"></div>
-      <div class="hudHint"><span class="mouseGlyph">↖</span> Drag to orbit · Scroll to zoom · Right-drag to tilt</div>
-    </div>
+    <div id="crosshair" class="crosshair" aria-hidden="true"><span></span><i></i></div>
+    <div class="speed-mark" aria-hidden="true"><span></span><span></span><span></span></div>
 
-    <div class="creditStrip">Imagery © Esri · OpenFreeMap © OpenMapTiles · Data © OpenStreetMap contributors</div>
+    <footer class="world-hud glass">
+      <div class="hud-col"><small>LATITUDE</small><strong id="latValue">23.8103° N</strong></div>
+      <div class="hud-col"><small>LONGITUDE</small><strong id="lonValue">90.4125° E</strong></div>
+      <div class="hud-col"><small>ALTITUDE</small><strong id="altValue">— m</strong></div>
+      <div class="hud-divider"></div>
+      <div class="mode-block"><small>MOVEMENT MODE</small><strong id="modeValue">DRONE</strong></div>
+      <div class="hud-message" id="hudMessage">Click inside the world to look around</div>
+    </footer>
 
-    <div id="terrainModal" class="modalBackdrop" hidden>
-      <section class="modal glass" role="dialog" aria-modal="true" aria-labelledby="terrainModalTitle">
-        <button id="closeTerrainModal" class="modalClose" aria-label="Close">×</button>
-        <div class="panelKicker">OPTIONAL · CESIUM ION</div>
-        <h2 id="terrainModalTitle">বাস্তব 3D Terrain চালু করুন</h2>
-        <p>Terrain যোগ করতে Cesium ion access token দরকার। Token ছাড়া অ্যাপ চলবে, তবে ভূমির উচ্চতা বাস্তবভাবে ওঠানামা করবে না।</p>
-        <a href="https://ion.cesium.com/tokens" target="_blank" rel="noopener noreferrer">Cesium ion থেকে token নিন ↗</a>
-        <label for="ionToken" class="fieldLabel">Access token</label>
-        <input id="ionToken" class="tokenInput" type="password" placeholder="Cesium ion token paste করুন" autocomplete="off" />
-        <div class="modalActions">
-          <button id="enableTerrainBtn" class="primaryButton">Token ব্যবহার করুন</button>
-          <button id="removeTokenBtn" class="softButton">Token মুছে দিন</button>
-        </div>
-        <p class="warningNote">Token এই ব্রাউজার ট্যাবের session storage-এ থাকবে; ট্যাব বন্ধ করলে মুছে যাবে। পাবলিক সাইটে ব্যবহারের জন্য সীমিত permission-সহ token তৈরি করুন।</p>
-      </section>
-    </div>
-
-    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    <div id="toast" role="status" aria-live="polite"></div>
+    <div id="loadingVeil" class="loading-veil" hidden><div class="loader-orbit"></div><strong id="veilTitle">Building world tile</strong><span id="veilDetail">Fetching terrain elevations and mapped geometry…</span></div>
+    <div id="fatalError" class="fatal-error" hidden></div>
   </main>
-  <script src="js/app.js"></script>
+  <script type="module" src="./src/main.js"></script>
 </body>
 </html>

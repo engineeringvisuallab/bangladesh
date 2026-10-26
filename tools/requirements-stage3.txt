@@ -1,4 +1,0 @@
-# Bangladesh Open World national offline data tools (Stage 5 grid v2). Python 3.11 or 3.12 recommended.
-pyosmium>=4.0,<5
-rasterio>=1.3,<2
-numpy>=1.24,<3

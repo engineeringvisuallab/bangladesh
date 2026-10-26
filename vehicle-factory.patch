@@ -1,0 +1,104 @@
+--- a/src/city/EngineeringZones.ts
++++ b/src/city/EngineeringZones.ts
+@@ -67,6 +67,7 @@
+   E('eng-waste', 'environmental', 'land', ['waste-management', 'recycling', 'environmental'], 0, -2900, 400, -2600),
+   // --- mechanical / production
+   E('eng-mech-works', 'mechanical', 'land', ['mechanical', 'thermal', 'machine-design', 'production', 'industrial'], 1450, 200, 2050, 650),
++  E('eng-vehicle', 'mechanical', 'land', ['automotive', 'vehicle-engineering', 'manufacturing', 'ev'], -500, 2400, 100, 2750),
+   E('eng-automation', 'mechanical', 'land', ['mechatronics', 'robotics', 'industrial-automation', 'supply-chain'], 2200, 550, 2800, 1000),
+   // --- materials / textile
+   E('eng-steel', 'materials', 'land', ['materials', 'metallurgy', 'cement', 'ceramic-glass'], 800, -3900, 1400, -3450),
+@@ -99,6 +100,7 @@
+ export const ENGINEERING_GATES: Readonly<Record<string, { side: 'N' | 'S' | 'E' | 'W'; at: number; width: number }>> = {
+   'eng-thermal-power': { side: 'S', at: 925, width: 30 },
+   'eng-dam': { side: 'S', at: 3450, width: 30 },
++  'eng-vehicle': { side: 'S', at: -129, width: 30 },
+ };
+ 
+ export const ENGINEERING_BY_ID: ReadonlyMap<string, EngineeringArea> = new Map(ENGINEERING_AREAS.map((a) => [a.id, a]));
+--- a/src/engineering/InfraSites.ts
++++ b/src/engineering/InfraSites.ts
+@@ -9,7 +9,7 @@
+ };
+ 
+ export interface InfraPlacement {
+-  id: 'swtp' | 'stp' | 'thermal' | 'grid' | 'mech' | 'dam' | 'chem' | 'auto' | 'renew';
++  id: 'swtp' | 'stp' | 'thermal' | 'grid' | 'mech' | 'dam' | 'chem' | 'auto' | 'renew' | 'vehicle';
+   nameBn: string;
+   /** site origin (the local (0,0) of the plant) and yaw: local +x maps to world (cos yaw, -sin yaw) */
+   x: number;
+@@ -57,6 +57,9 @@
+   // Renewable energy park: inside the engineering area 'eng-renewable' (x -2750..-2250, z -2900..-2550). Free, flat ground (1.7 m of relief, >= 15 m from every road); the gate faces south
+   // towards the nearest road (S12, at the south-west corner).
+   { id: 'renew', nameBn: 'Renewable Energy Park', x: -2438, z: -2781, yaw: 0, rect: { x0: -158, x1: 158, z0: -93, z1: 93 }, riverSide: 'none', color: '#76ff03', mark: 'R', deep: 1.5, blend: 24, riverBlend: 24, lift: 0 },
++  // EV vehicle factory: inside the NEW engineering area 'eng-vehicle' (x -500..100, z 2400..2750): flat dry ground, no public road crosses it (the fence has no gaps),
++  // ~1.7 m of relief under the pad. Pad 380 x 300 m, entrance on the south side (local +z).
++  { id: 'vehicle', nameBn: 'EV Vehicle Factory', x: -129, z: 2571, yaw: 0, rect: { x0: -190, x1: 190, z0: -150, z1: 150 }, riverSide: 'none', color: '#b388ff', mark: 'V', deep: 3, blend: 35, riverBlend: 35, lift: 0 },
+ ];
+ 
+ /** Floor is cut slightly BELOW the plate so the plate never z-fights with the ground. */
+--- a/src/engineering/index.ts
++++ b/src/engineering/index.ts
+@@ -6,7 +6,7 @@
+ import { swtpDef } from './civil/water-supply/swtp';
+ import { stpDef } from './civil/wastewater/stp';
+ import { thermalDef, gridDef } from './electrical';
+-import { mechDef, autoDef } from './mechanical';
++import { mechDef, autoDef, vehicleDef } from './mechanical';
+ import { damDef } from './civil';
+ import { chemDef } from './chemical';
+ import { renewDef } from './renewable';
+@@ -26,5 +26,6 @@
+   registerInfrastructure(chemDef);
+   registerInfrastructure(autoDef);
+   registerInfrastructure(renewDef);
++  registerInfrastructure(vehicleDef);
+   // registerInfrastructure(wtpGroundwaterDef);  // later ...
+ }
+--- a/src/engineering/mechanical/index.ts
++++ b/src/engineering/mechanical/index.ts
+@@ -1,3 +1,4 @@
+ // Mechanical engineering systems: the mechanical works (engine, mechanisms, machine shop, hydraulics, refrigeration) and the automation & robotics plant. Registered in ../index.ts
+ export { mechDef, createMechWorks } from "./mech-works";
+ export { autoDef, createAutomationPlant } from "./automation";
++export { vehicleDef, createVehicleFactory } from "./vehicle-factory";
+--- a/src/i18n/bn.ts
++++ b/src/i18n/bn.ts
+@@ -67,6 +67,7 @@
+       'eng-structures': 'স্ট্রাকচারাল ও কনস্ট্রাকশন টেস্ট ইয়ার্ড (সিভিল)',
+       'eng-geotech': 'জিওটেকনিক্যাল ও ভূমিধস গবেষণা ক্ষেত্র (সিভিল)',
+       'eng-transport': 'পরিবহন ইঞ্জিনিয়ারিং কেন্দ্র (সিভিল)',
++      'eng-vehicle': 'Vehicle Factory (Automotive Engineering)',
+       'eng-dam': 'বাঁধ ও জলবিদ্যুৎ কেন্দ্র (পানিসম্পদ)',
+       'eng-waste': 'বর্জ্য ব্যবস্থাপনা ও রিসাইক্লিং কমপ্লেক্স',
+       'eng-mech-works': 'মেকানিক্যাল ও প্রোডাকশন ওয়ার্কশপ ক্যাম্পাস',
+--- a/scripts/eng-zones-test.ts
++++ b/scripts/eng-zones-test.ts
+@@ -27,7 +27,7 @@
+ const sc = g.makeSample(), s2 = g.makeSample();
+ 
+ // the thermal plant is built INSIDE its own engineering area (eng-thermal-power): it is not an obstacle for that area
+-const infra: [string, R][] = INFRA_PLACEMENTS.filter((p) => p.id !== 'thermal' && p.id !== 'grid' && p.id !== 'mech' && p.id !== 'dam' && p.id !== 'chem' && p.id !== 'auto' && p.id !== 'renew').map((p) => {
++const infra: [string, R][] = INFRA_PLACEMENTS.filter((p) => p.id !== 'thermal' && p.id !== 'grid' && p.id !== 'mech' && p.id !== 'dam' && p.id !== 'chem' && p.id !== 'auto' && p.id !== 'renew' && p.id !== 'vehicle').map((p) => {
+   const r = Math.hypot(Math.max(Math.abs(p.rect.x0), Math.abs(p.rect.x1)), Math.max(Math.abs(p.rect.z0), Math.abs(p.rect.z1))) + p.blend;
+   return [p.id, { x0: p.x - r, x1: p.x + r, z0: p.z - r, z1: p.z + r }];
+ });
+--- a/package.json
++++ b/package.json
+@@ -23,6 +23,7 @@
+     "preview": "vite preview",
+     "typecheck": "tsc --noEmit",
+     "test:farm": "tsx scripts/farm-test.ts",
++    "test:vehicle-factory": "tsx scripts/vehicle-factory-test.ts",
+     "test:farm-crew": "tsx scripts/farm-crew-test.ts",
+     "gen:farm": "tsx scripts/gen-farm-fields.ts",
+     "test:roads": "tsx scripts/road-test.ts",
+@@ -31,7 +32,7 @@
+     "test:drive": "tsx scripts/drive-test.ts",
+     "test:rivers": "tsx scripts/river-block.ts",
+     "test:pads": "tsx scripts/pad-stat.ts",
+-    "test:infra": "tsx scripts/infra-test.ts && tsx scripts/infra-runtime-test.ts && tsx scripts/thermal-test.ts && tsx scripts/grid-test.ts && tsx scripts/mech-test.ts && tsx scripts/dam-test.ts && tsx scripts/chem-test.ts && tsx scripts/automation-test.ts && tsx scripts/renew-test.ts",
++    "test:infra": "tsx scripts/infra-test.ts && tsx scripts/infra-runtime-test.ts && tsx scripts/thermal-test.ts && tsx scripts/grid-test.ts && tsx scripts/mech-test.ts && tsx scripts/dam-test.ts && tsx scripts/chem-test.ts && tsx scripts/automation-test.ts && tsx scripts/renew-test.ts && tsx scripts/vehicle-factory-test.ts",
+     "test:people": "tsx scripts/people-test.ts",
+     "test:city": "tsx scripts/city-plan-test.ts",
+     "test:zones": "tsx scripts/world-zones-test.ts",

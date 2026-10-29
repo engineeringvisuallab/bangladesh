@@ -1,0 +1,21 @@
+{
+  "id": "bogura",
+  "name": "Bogura",
+  "nameBn": "বগুড়া",
+  "reference": {
+    "image": "reference.jpg",
+    "width": 2576,
+    "height": 1401,
+    "note": "Google Earth screenshot, north-up. Grid = national projection (UTM 45N). The two gcps are the two coordinate pins visible in the image (pixel = centre of the pin icon). X scale is confirmed by the image scale bar; Y scale comes only from the pins and should be double-checked with a 3rd point.",
+    "gcps": [
+      { "id": "pin-nw", "px": 191.0, "py": 41.2, "e": 732749.90, "n": 2753306.84 },
+      { "id": "pin-se", "px": 1755.4, "py": 1305.8, "e": 741948.14, "n": 2746581.70 }
+    ],
+    "checkpoints": [
+      { "id": "hospital", "name": "Shaheed Ziaur Rahman Medical College (H pin)", "px": 1085, "py": 1095 },
+      { "id": "kalitola", "name": "Kalitola Hat (blue pin)", "px": 1415, "py": 485 },
+      { "id": "airport", "name": "Airstrip, middle of runway", "px": 430, "py": 312 }
+    ]
+  },
+  "terrain": { "type": "flat", "elevationM": 0 }
+}

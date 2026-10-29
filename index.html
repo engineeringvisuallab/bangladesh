@@ -1,17 +1,23 @@
 <!doctype html>
-<html lang="bn">
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>ইঞ্জিনিয়ারিং ভিজ্যুয়াল সিটি</title>
+    <title>EVWorld - Bogura</title>
     <style>
       html, body { margin: 0; height: 100%; overflow: hidden; background: #0b1520; }
       #app { position: fixed; inset: 0; }
       canvas { display: block; }
+      #hud {
+        position: fixed; left: 10px; top: 10px; margin: 0; padding: 8px 10px;
+        font: 12px/1.45 ui-monospace, Menlo, Consolas, monospace; color: #fff; white-space: pre;
+        background: rgba(0, 0, 0, 0.55); border-radius: 6px; pointer-events: none;
+      }
     </style>
   </head>
   <body>
     <div id="app"></div>
+    <pre id="hud"></pre>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

@@ -1,21 +1,72 @@
 {
-  "id": "bogura",
-  "name": "Bogura",
-  "nameBn": "বগুড়া",
-  "reference": {
-    "image": "reference.jpg",
-    "width": 2576,
-    "height": 1401,
-    "note": "Google Earth screenshot, north-up. Grid = national projection (UTM 45N). The two gcps are the two coordinate pins visible in the image (pixel = centre of the pin icon). X scale is confirmed by the image scale bar; Y scale comes only from the pins and should be double-checked with a 3rd point.",
-    "gcps": [
-      { "id": "pin-nw", "px": 191.0, "py": 41.2, "e": 732749.90, "n": 2753306.84 },
-      { "id": "pin-se", "px": 1755.4, "py": 1305.8, "e": 741948.14, "n": 2746581.70 }
-    ],
-    "checkpoints": [
-      { "id": "hospital", "name": "Shaheed Ziaur Rahman Medical College (H pin)", "px": 1085, "py": 1095 },
-      { "id": "kalitola", "name": "Kalitola Hat (blue pin)", "px": 1415, "py": 485 },
-      { "id": "airport", "name": "Airstrip, middle of runway", "px": 430, "py": 312 }
-    ]
+ "id": "bogura",
+ "name": "Bogura",
+ "nameBn": "বগুড়া",
+ "references": [
+  {
+   "id": "airport",
+   "image": "airport.jpg",
+   "width": 1740,
+   "height": 2496,
+   "note": "Georeferenced airport photo (1.278 m/px). Ticks of the map frame fitted to UTM 45N: rms 0.05 m. Most accurate layer; used first.",
+   "gcps": [
+    {
+     "id": "nw",
+     "px": 0,
+     "py": 0,
+     "e": 733220.15,
+     "n": 2753623.65
+    },
+    {
+     "id": "se",
+     "px": 1740,
+     "py": 2496,
+     "e": 735443.94,
+     "n": 2750433.77
+    }
+   ]
   },
-  "terrain": { "type": "flat", "elevationM": 0 }
+  {
+   "id": "main_map",
+   "image": "main_map_clean.jpg",
+   "width": 2576,
+   "height": 1401,
+   "note": "Google Earth screenshot. Registered to the airport photo by image correlation (isotropic 5.82 m/px). The two coordinate pins in the screenshot disagree with the photo in northing by 170-460 m, so they are NOT used. Good near the airport (+-20 m), worse far away: add more georeferenced photos.",
+   "gcps": [
+    {
+     "id": "nw",
+     "px": 0,
+     "py": 0,
+     "e": 731618.73,
+     "n": 2754013.97
+    },
+    {
+     "id": "se",
+     "px": 2576,
+     "py": 1401,
+     "e": 746611.05,
+     "n": 2745860.15
+    }
+   ],
+   "checkpoints": [
+    {
+     "id": "hospital",
+     "name": "Shaheed Ziaur Rahman Medical College (H pin in screenshot)",
+     "px": 1085,
+     "py": 1095
+    },
+    {
+     "id": "kalitola",
+     "name": "Kalitola Hat (blue pin in screenshot)",
+     "px": 1415,
+     "py": 485
+    }
+   ]
+  }
+ ],
+ "terrain": {
+  "type": "flat",
+  "elevationM": 0
+ },
+ "roads": "roads.json"
 }

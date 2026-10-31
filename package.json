@@ -4,15 +4,20 @@
   "version": "0.1.0",
   "description": "Open-world driving game on real Bangladesh geography. One national coordinate system; cities are added as regions.",
   "type": "module",
-  "engines": { "node": ">=20" },
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
-    "test:geo": "tsx scripts/geo-test.ts"
+    "test:geo": "tsx scripts/geo-test.ts",
+    "test:roads": "tsx scripts/roads-test.ts",
+    "test": "npm run test:geo && npm run test:roads"
   },
   "dependencies": {
+    "@dimforge/rapier3d-compat": "^0.21.0",
     "three": "^0.186.1"
   },
   "devDependencies": {

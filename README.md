@@ -3,21 +3,23 @@
 Open-world driving game on **real Bangladesh geography**. Every city is a *region* placed on one national coordinate
 grid, so cities can be added one by one and always land at the right place.
 
-**Stage 1 (this version):** Bogura only - flat terrain, the Google Earth image draped on it as a reference map, free-fly camera
-with a live coordinate read-out. No roads, no vehicles yet (see Roadmap).
+**Stage 2 (this version):** Bogura. Real ground photo on flat terrain, **the airport (runway, taxiway, apron, access road) and the Bogura main road**
+with asphalt grip, a free-fly camera with a live coordinate read-out, and **all EVCity vehicles** parked on the airport apron.
 
 ## Run
 
 ```bash
 npm install
 npm run dev          # http://localhost:5173
-npm run test:geo     # coordinate maths tests (no dependencies)
+npm test             # coordinate + road tests (no dependencies, also run by the GitHub action)
 npm run typecheck
 npm run build        # -> dist/
 ```
 
-Controls: click = mouse look, `WASD` move, `Space/E` up, `C/Q` down, `Shift` fast, mouse wheel = speed,
-`B` reference map on/off, `K` copy "lat, lon" of the camera (paste it into Google Earth / Maps to compare).
+Fly camera (you): click = mouse look, `WASD` move, `Space/E` up, `C/Q` down, `Shift` fast, wheel = speed.
+Walk up to a vehicle (within 7 m) and press `F` to get in; `F` again (when stopped) to get out.
+Driving: `W/S` gas+brake/reverse, `A/D` steer, `Space` handbrake, `E/Q` gear up/down, `G` auto/manual, `R` flip upright, `H` horn.
+Suprim: `N` flight, `C` dive, `T` float, `Space/X` up/down. Everywhere: `B` reference map on/off, `K` copy "lat, lon" (paste into Google Earth).
 
 ## Publish free on GitHub Pages
 
@@ -41,28 +43,33 @@ Controls: click = mouse look, `WASD` move, `Space/E` up, `C/Q` down, `Shift` fas
 - **Region** = one folder `public/regions/<id>/` with `region.json` + a reference image. Its pixel <-> E/N mapping
   (`src/geo/GeoRef.ts`) is computed from ground control points (GCPs) listed in the json.
 
+## Georeferenced pictures ("references")
+
+A region lists the pictures that cover it (`public/regions/<id>/region.json -> references`), each with its own control points (GCPs).
+The originals live in `sources/<id>/` (not published). `tools/build_ground.py <id>` cuts them into one photo per 500 m tile
+(`public/regions/<id>/ground/<i>_<j>.jpg`); where pictures overlap, the finest wins. Needs `pip install opencv-python numpy`.
+
+- **airport photo** (1.278 m/px): the tick marks of its map frame were measured and fitted to UTM 45N, residual 0.05 m (checked again in `npm test`
+  against three of the ticks). This is the accurate layer; roads are traced from it.
+- **Google Earth screenshot** (5.82 m/px): the two coordinate pins in it **do not agree** with the airport photo (northing off by 170-460 m, easting fine), so
+  they are not used. Instead the screenshot was registered to the airport photo by image correlation (`isotropic 5.82 m/px`; the same peak was found
+  in a free fit). Runway thresholds agree within ~25 m. Far from the airport the error is unknown and grows: more georeferenced photos like the
+  airport one (export with the lat/lon frame) will fix it - add them to `references`, run `build_ground.py`.
+  `tools/clean_main_map.py` removes labels/pins from the screenshot first.
+
+## Roads
+
+`public/regions/<id>/roads.json`: centre lines in `[easting, northing]` metres + width + class (`highway`, `access`, `runway`, `taxiway`) and paved areas (`apron`).
+`src/roads/RoadNetwork.ts` answers "asphalt or ground?" for the vehicle physics, `RoadMeshes.ts` draws them (markings are generated).
+Bogura so far (first pass, traced from the airport photo with `tools/trace_bogura_roads.py`): main road 2.2 km (only the part inside the airport
+photo), runway 1.34 km at bearing 119/299, one taxiway, the apron, the 470 m airport access road. To change a road, edit its pixel picks in the script
+and run it (or edit `roads.json` directly).
+
 ## Add a city (e.g. Rajshahi)
 
-1. Make a Google Earth screenshot (north-up) with at least 2 coordinate pins visible (3+ is better).
-2. Create `public/regions/rajshahi/` with `reference.jpg` and a `region.json` (copy Bogura's: id, name, image size, `gcps`
-   = pixel position of each pin + its E/N, optional `checkpoints`).
-3. Add `"rajshahi"` to `public/regions/index.json`.
-
-Nothing else changes. Roads/buildings of that city later go in the same folder, in E/N metres.
-
-## Georeferencing of Bogura - read this
-
-`docs/georef-preview.jpg` shows the image with a 1 km grid computed from the two pins.
-
-- **Checked:** the zone/projection (Bogura town lands at 24.850 N, 89.374 E), and the **x scale** (5.88 m/pixel; the image
-  scale bar agrees).
-- **Not yet checked:** the **y scale** (5.32 m/pixel) comes only from the two pins and is ~10 % smaller than x. That is
-  unusual for a straight-down screenshot, so it may hide a tilt or a stretched image. Error would grow towards the
-  north/south edges (up to a few hundred metres).
-- **Fix (5 minutes):** in Google Earth click 2-3 more recognisable points spread over the image (e.g. the hospital pin,
-  Kalitola Hat, a road junction in the far north), note their UTM coordinates and their pixel position in `Main_Map.jpg`, and
-  add them to `gcps` in `region.json`. With 3+ points the fit is a full least-squares affine and reports residuals.
-  The red pillars in the viewer (`checkpoints`) let you fly to a spot and compare the HUD coordinates with Google Earth.
+1. A georeferenced picture (3+ control points, or the tick marks of a map frame) per area you have.
+2. `sources/rajshahi/`, `public/regions/rajshahi/region.json` (copy Bogura's), `roads.json`; add `"rajshahi"` to `public/regions/index.json`.
+3. `python tools/build_ground.py rajshahi`.
 
 ## Terrain
 
@@ -70,9 +77,18 @@ No elevation data was available, so the ground is flat (`terrain.elevationM`). E
 interface (`src/world/Heightfield.ts`) for ground height, so a real height-map (SRTM / Copernicus DEM 30 m, or a PNG)
 plugs in later without touching the streamer or the vehicles. Bogura is on the Bangladesh floodplain, so flat is a fair start.
 
+## Where the vehicle code comes from
+
+`src/vehicles`, `src/physics`, `src/people` (driver figure), `src/camera/OrbitCamera.ts`, `src/input` are **unchanged copies** from EVCity, so
+they behave the same. The pieces EVCity has that Bogura does not (people AI, police, rail, vegetation, roads, UI) are replaced by small
+stubs with the same shapes: `src/terrain`, `src/rail`, `src/traffic`, `src/people/Person.ts`, `src/vehicles/RailLock.ts`, trimmed `src/core/Config.ts`.
+`src/game/DriveSystem.ts` is a slim replacement of EVCity's VehicleManager. `src/world/GroundTerrain.ts` + `GroundPhysics.ts` give the
+vehicles flat ground now and real heights later (both read the `Heightfield`).
+
+Not ported yet: walking player, HUD panels / vehicle menu, crash fire & explosions (`VehicleFx`), AI traffic, railway for Suprim.
+
 ## Roadmap
 
-1. **Stage 1b - vehicles:** port EVCity's vehicles (`src/vehicles`) with Rapier physics. They only need a small terrain
-   interface (`heightAt`, `sample`, surface type), which `Heightfield` will provide. People/combat/rail hooks are left out.
-2. **Stage 2 - roads:** polylines in E/N metres per region, rendered per tile (you supply the details).
-3. Real height-map, water, then more cities.
+1. **More roads:** continue the main road east into the city (needs a georeferenced picture of that part), city streets, lane/junction details, per-tile streaming.
+2. Real height-map, water, then more cities (+ floating origin when cities are far apart: set `Config.floatingOrigin.threshold`).
+3. Walking player, vehicle menu, AI traffic as needed.

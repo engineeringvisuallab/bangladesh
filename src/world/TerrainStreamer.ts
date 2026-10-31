@@ -27,18 +27,20 @@ export class TerrainStreamer {
   readonly group = new THREE.Group();
   private readonly infos = new Map<string, TileInfo>();
   private readonly loaded = new Map<string, THREE.Mesh>();
-  private readonly satellite = new Map<string, THREE.MeshBasicMaterial>();
+  private readonly tileMaterials = new Map<string, THREE.MeshBasicMaterial>();
+  private readonly loader = new THREE.TextureLoader();
   private readonly plain = new THREE.MeshLambertMaterial({ color: 0x86a45c });
   private useSatellite = true;
+  /** Highest anisotropy the GPU allows (set by the game once the renderer exists). */
+  maxAnisotropy = 8;
 
   constructor(
-    private readonly frame: WorldFrame,
+    frame: WorldFrame,
     regions: readonly Region[],
     private readonly heightOf: (region: Region) => Heightfield,
   ) {
     this.group.name = 'Terrain';
     for (const region of regions) {
-      this.satellite.set(region.id, new THREE.MeshBasicMaterial({ color: 0x86a45c }));
       for (const tile of region.tiles()) {
         const key = tileKey(tile);
         if (this.infos.has(key)) continue; // a tile shared by two regions belongs to the first one
@@ -55,25 +57,16 @@ export class TerrainStreamer {
     return this.loaded.size;
   }
 
-  /** Give a region its reference image as ground colour. */
-  setReferenceTexture(regionId: string, texture: THREE.Texture): void {
-    const mat = this.satellite.get(regionId);
-    if (!mat) return;
-    mat.map = texture;
-    mat.color.set(0xffffff);
-    mat.needsUpdate = true;
-  }
-
   setSatellite(on: boolean): void {
     this.useSatellite = on;
-    for (const [key, mesh] of this.loaded) mesh.material = this.materialFor(this.infos.get(key)!);
+    for (const [key, mesh] of this.loaded) mesh.material = this.materialFor(key);
   }
   get satelliteOn(): boolean {
     return this.useSatellite;
   }
 
-  private materialFor(info: TileInfo): THREE.Material {
-    return this.useSatellite ? (this.satellite.get(info.region.id) ?? this.plain) : this.plain;
+  private materialFor(key: string): THREE.Material {
+    return this.useSatellite ? (this.tileMaterials.get(key) ?? this.plain) : this.plain;
   }
 
   /** Call every frame with the camera position in scene coordinates. */
@@ -96,18 +89,22 @@ export class TerrainStreamer {
     if (!mesh) return;
     this.group.remove(mesh);
     mesh.geometry.dispose();
+    const mat = this.tileMaterials.get(key);
+    if (mat) {
+      mat.map?.dispose();
+      mat.dispose();
+      this.tileMaterials.delete(key); // a photo that arrives later finds no material and is thrown away
+    }
     this.loaded.delete(key);
   }
 
   private build(info: TileInfo): void {
     const hf = this.heightOf(info.region);
-    const gr = info.region.georef;
     const n = SEGMENTS + 1;
     const step = TILE_SIZE_M / SEGMENTS;
     const pos = new Float32Array(n * n * 3);
     const nor = new Float32Array(n * n * 3);
     const uv = new Float32Array(n * n * 2);
-    const px = { px: 0, py: 0 };
     for (let iz = 0; iz < n; iz++) {
       for (let ix = 0; ix < n; ix++) {
         const k = iz * n + ix;
@@ -125,9 +122,8 @@ export class TerrainStreamer {
         nor[k * 3] = -dhx * inv;
         nor[k * 3 + 1] = inv;
         nor[k * 3 + 2] = -dhz * inv;
-        gr.enToPixel(this.frame.toE(x), this.frame.toN(z), px);
-        uv[k * 2] = px.px / gr.width;
-        uv[k * 2 + 1] = 1 - px.py / gr.height; // image row 0 is the top; texture v = 1 is the top
+        uv[k * 2] = ix / SEGMENTS; // the tile photo covers exactly the tile; its top row is the north edge
+        uv[k * 2 + 1] = 1 - iz / SEGMENTS;
       }
     }
     // Counter-clockwise seen from above (+y): north row first (z grows southwards).
@@ -153,7 +149,20 @@ export class TerrainStreamer {
     geo.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
     geo.setIndex(new THREE.BufferAttribute(idx, 1));
     geo.computeBoundingSphere();
-    const mesh = new THREE.Mesh(geo, this.materialFor(info));
+    const mat = new THREE.MeshBasicMaterial({ color: 0x86a45c });
+    this.tileMaterials.set(info.key, mat);
+    this.loader.load(`./regions/${info.region.id}/ground/${info.tile.i}_${info.tile.j}.jpg`, (tex) => {
+      if (this.tileMaterials.get(info.key) !== mat) {
+        tex.dispose(); // tile was dropped while the photo was loading
+        return;
+      }
+      tex.colorSpace = THREE.SRGBColorSpace;
+      tex.anisotropy = this.maxAnisotropy;
+      mat.map = tex;
+      mat.color.set(0xffffff);
+      mat.needsUpdate = true;
+    });
+    const mesh = new THREE.Mesh(geo, this.materialFor(info.key));
     mesh.position.set(info.x0, 0, info.z0);
     mesh.matrixAutoUpdate = false;
     mesh.updateMatrix();
@@ -164,7 +173,6 @@ export class TerrainStreamer {
 
   dispose(): void {
     for (const key of [...this.loaded.keys()]) this.drop(key);
-    for (const m of this.satellite.values()) m.dispose();
     this.plain.dispose();
   }
 }

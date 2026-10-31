@@ -26,15 +26,16 @@ const near = (a: number, b: number, tol: number): boolean => Math.abs(a - b) <= 
 
 // 2. GeoRef from 2 points reproduces the points, and pixel <-> E/N round-trips.
 const def = JSON.parse(readFileSync(new URL('../public/regions/bogura/region.json', import.meta.url), 'utf8')) as RegionDef;
+const mainRef = def.references.find((r) => r.id === 'main_map')!;
 {
-  const g = GeoRef.fit(def.reference.gcps, def.reference.width, def.reference.height);
-  const res = g.residuals(def.reference.gcps);
+  const g = GeoRef.fit(mainRef.gcps, mainRef.width, mainRef.height);
+  const res = g.residuals(mainRef.gcps);
   check('2-point fit hits both control points', res.every((r) => r.metres < 1e-6));
   const p = g.pixelToEN(1000, 700);
   const back = g.enToPixel(p.e, p.n);
   check('pixel -> E/N -> pixel round trip', near(back.px, 1000, 1e-9) && near(back.py, 700, 1e-9));
   const mpp = g.metresPerPixel();
-  check('metres per pixel (x ~5.9, y ~5.3)', near(mpp.x, 5.88, 0.05) && near(mpp.y, 5.32, 0.05), `${mpp.x.toFixed(3)} x ${mpp.y.toFixed(3)}`);
+  check('screenshot is isotropic, ~5.8 m/px', near(mpp.x, 5.82, 0.05) && near(mpp.y, 5.82, 0.05), `${mpp.x.toFixed(3)} x ${mpp.y.toFixed(3)}`);
   const b = g.bounds();
   console.log(`      image covers ${(b.maxE - b.minE).toFixed(0)} m x ${(b.maxN - b.minN).toFixed(0)} m`);
 }
@@ -78,8 +79,18 @@ const def = JSON.parse(readFileSync(new URL('../public/regions/bogura/region.jso
     const ll = enToLonLat(c.e, c.n);
     console.log(`      ${c.id.padEnd(9)} ${ll.lat.toFixed(5)}, ${ll.lon.toFixed(5)}`);
   }
-  const mid = enToLonLat(...(Object.values(region.georef.pixelToEN(1405, 583)) as [number, number]));
+  const p = region.georefs[1].pixelToEN(1405, 583);
+  const mid = enToLonLat(p.e, p.n);
   check('"Bogura" label lands on Bogura town (24.85 N, 89.37 E +-0.01)', near(mid.lat, 24.85, 0.01) && near(mid.lon, 89.373, 0.01), `${mid.lat.toFixed(4)}, ${mid.lon.toFixed(4)}`);
+  // independent check of the airport photo: the map-frame tick marks (found in the image, NOT used to build region.json's numbers directly)
+  // crop = original photo shifted by (44, 41). Top tick 89 19'0"E at x=687.5, bottom tick at x=730.0, left tick 24 52'30"N at y=463.5.
+  const air = region.georefs[0];
+  const lonOf = (px: number, py: number): number => { const q = air.pixelToEN(px, py); return enToLonLat(q.e, q.n).lon; };
+  const latOf = (px: number, py: number): number => { const q = air.pixelToEN(px, py); return enToLonLat(q.e, q.n).lat; };
+  const m = (deg: number): number => deg * 101000; // ~metres
+  check('airport photo: top tick = 89 19\'0"E (within 1 m)', near(m(lonOf(687.5 - 44, 39 - 41)), m(89 + 19 / 60), 1), `${lonOf(687.5 - 44, 39 - 41).toFixed(7)}`);
+  check('airport photo: bottom tick = 89 19\'0"E (within 1 m)', near(m(lonOf(730.0 - 44, 2538 - 41)), m(89 + 19 / 60), 1));
+  check('airport photo: right-edge lat tick = 24 52\'0"N (within 1 m)', near(latOf(1785 - 44, 1156.4 - 41) * 110900, (24 + 52 / 60) * 110900, 1));
 }
 
 console.log(failed === 0 ? '\nall geo tests passed' : `\n${failed} FAILED`);
